@@ -1,3 +1,5 @@
+// may also want to track byte size of hits/misses/evictions in the future
+#[derive(Debug)] // allow for auto-formatter printing
 pub enum CacheEvent {
     Hit  { key_hash: u64, tick: usize }, // found the key in cache
     Miss { key_hash: u64, tick: usize }, // did not locate key in cache
@@ -5,6 +7,7 @@ pub enum CacheEvent {
     Evict  { key_hash: u64, size_bytes: usize, tick: usize }, // evicted a key from cache to free up space for new insertions
 }
 
+#[derive(Debug)]
 pub struct CacheTrace {
     events: Vec<CacheEvent>,
     enabled: bool, // only enabled during testing/debugging
