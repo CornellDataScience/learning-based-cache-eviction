@@ -10,7 +10,7 @@ pub struct Entry<T> {
 
 impl<T> Entry<T> {
     pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64) -> Self {
-        Self {
+        Entry {
             key,
             size_in_bytes,
             insertion_tick,
