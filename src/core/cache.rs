@@ -42,7 +42,7 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
 
             // If at capacity, ask policy who to evict
             if self.store.len() >= self.capacity {
-                if let Some(evict_key) = self.policy.on_miss(key) {
+                if let Some(evict_key) = self.policy.victim(key) {
                     self.store.remove(&evict_key);
                     self.policy.remove(evict_key);
                     self.metrics.record_eviction();
