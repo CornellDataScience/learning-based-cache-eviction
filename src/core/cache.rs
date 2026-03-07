@@ -1,128 +1,63 @@
 use std::collections::HashMap;
 
-// block size
-const block_size: u32 = 4;
+use crate::core::entry::Entry;
+use crate::core::mainmemory::MainMemory;
+use crate::core::metrics::Metrics;
+use crate::core::policy::{CacheKey, Policy};
+use crate::core::time::Clock;
 
-// equivalent to block
-pub struct CacheLine<const BLOCKSIZE: usize> {
-    pub valid: bool, // if the data is valid
-    pub dirty: bool, // this is for a non-write through cache which we haven't implemented yet lmao
-    pub tag: u32,
-    pub index: u32,
-    pub size: u32,
-    pub data: [u8; BLOCKSIZE]
+pub struct Cache<P: Policy, const MM_SIZE: usize> {
+    pub capacity: usize,
+    pub store: HashMap<CacheKey, Entry<CacheKey>>,
+    pub policy: P,
+    pub metrics: Metrics,
+    pub clock: Clock,
+    pub main_memory: MainMemory<MM_SIZE>,
 }
 
-pub struct Set<const WAYS: usize, const BLOCKSIZE: usize> {
-    pub lines: HashMap
-}
-
-// here we write back to MM see comment below this is why we need MM
-pub struct WriteThroughCache {
-    pub block_size: u32,
-    pub num_ways: u32,
-    pub num_sets: u32,
-    pub policy: Policy,
-    pub sets: [Set; num_sets]
-}
-
-/* 
-we lowkey need main memory so that we know what
- blocks to fetch when we have a cache miss
-
- theoretically when new data is created the whole thing should be written to main memory, but that will
- happen via cache i guess?
-*/
-
-pub impl WriteThroughCache {
-    fn new(block_size : u32, num_ways: u32, num_sets : u32, policy: Policy) -> Self {
-        Self {            
-            sets: [Set; num_sets] = std::array::from_fn(|_| 
-            Set {
-                lines: HashMap::with_capacity(num_ways)
-            });
-            block_size, num_ways, num_sets, policy
+impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
+    pub fn new(capacity: usize, policy: P, main_memory: MainMemory<MM_SIZE>) -> Self {
+        Self {
+            capacity,
+            store: HashMap::new(),
+            policy,
+            metrics: Metrics::new(),
+            clock: Clock::new(),
+            main_memory,
         }
     }
 
-    
-    fn miss(address) {}{
-        u32 offset_bits = block_size.ilog2();
-        u32 index_bits = num_sets.ilog2();
-        u32 tag_bits = 32 - offset_bits - index_bits;
-        
-        u32 offset_mask = block_size - 1;
-        u32 index_mask = (num_sets - 1) << offset_bits;
-        u32 tag_mask = (-1) << (offset_bits + index_bits);
+    pub fn access(&mut self, key: CacheKey) {
+        self.clock.tick_up();
+        let tick = self.clock.get_tick();
 
-        u32 offset = address & offset_mask;
-        u32 index = address & index_mask >> offset_bits;
-        u32 tag = address & tag_mask >> (offset_bits + index_bits);
+        if let Some(entry) = self.store.get_mut(&key) {
+            // Hit
+            entry.on_access(tick);
+            self.policy.on_hit(key);
+            self.metrics.record_hit();
+        } else {
+            // Miss
+            self.metrics.record_miss();
 
-        // maybe we also need to tell policy that we had a miss on a store vs a load
-        evict_choice = POLICY.evict_candidate(sets[index]) // policy tells us which one to evict out of the stuff in the sets
-        
-
-        // create the new block
-        let new_line = CacheLine::<block_size> {
-            valid: false,
-            dirty: false,
-            tag: tag,
-            index: index,
-            size: block_size, 
-            data: [u8; 64]
-        }
-        
-
-        // now we pull the entire corresponding block for the missed address
-        u32 offset_bits = block_size.ilog2()
-        u32 block_address = (address >> offset_bits) << offset_bits
-        for index in 0..block_size {
-            new_line.data[index] = MAINMEMORY[(block_address << offset_bits) | index]
-        }
-
-        sets[index][evict_choice] = new_line;
-    }
-
-
-    fn find(address : u32) -> Option<u8> {
-        u32 offset_bits = block_size.ilog2();
-        u32 index_bits = num_sets.ilog2();
-        u32 tag_bits = 32 - offset_bits - index_bits;
-        
-        u32 offset_mask = block_size - 1;
-        u32 index_mask = (num_sets - 1) << offset_bits;
-        u32 tag_mask = (0xFFFFFFFF) << (offset_bits + index_bits);
-
-        u32 offset = address & offset_mask;
-        u32 index = address & index_mask >> offset_bits;
-        u32 tag = address & tag_mask >> (offset_bits + index_bits);
-        
-        if tag in sets[index] {
-            return Some sets[index][tag].data[offset]
-        }
-        return None
-    }
-
-    fn read(address : u32) -> u8 {
-        match find(address) {
-            Some(byte) => byte // on read, we good. MIGHT NEED TO TELL POLICY WE HAD A HIT
-            None => { // store if needed, then return from mem
-                miss(address);
-                mem[address];
+            // If at capacity, ask policy who to evict
+            if self.store.len() >= self.capacity {
+                if let Some(evict_key) = self.policy.on_miss(key) {
+                    self.store.remove(&evict_key);
+                    self.policy.remove(evict_key);
+                    self.metrics.record_eviction();
+                }
+            } else {
+                self.policy.on_miss(key);
             }
-        }
-    }
 
-    fn write(address : u32, val : u8) -> {
-        mem[address] = val; // store always
-        match find(address) {
-            Some(byte) => byte { // on hit, we st
-                sets[index][tag].data[offset] = val; // MIGHT NEED TO TELL POLICY WE HAD A HIT
-            }
-            None => {
-                miss(address)
-            }
+            // Fetch from main memory
+            let _ = self.main_memory.fetch(key);
+
+            // Insert new entry
+            let entry = Entry::new(key, 1, tick);
+            self.store.insert(key, entry);
+            self.policy.insert(key);
         }
     }
 }
