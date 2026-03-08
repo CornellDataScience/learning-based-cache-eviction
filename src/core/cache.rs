@@ -41,8 +41,12 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
             self.metrics.record_miss();
 
             // If at capacity, ask policy who to evict
+
+            /* on_miss and victim are interchangeable ig? and then remove is the thing that tells the policy that we 
+            did actually get rid of something
+            */
             if self.store.len() >= self.capacity {
-                if let Some(evict_key) = self.policy.victim(key) {
+                if let Some(evict_key) = self.policy.on_miss(key) {
                     self.store.remove(&evict_key);
                     self.policy.remove(evict_key);
                     self.metrics.record_eviction();
