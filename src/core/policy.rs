@@ -1,5 +1,5 @@
 //represents key stored in cache
-pub type CacheKey = u64
+pub type CacheKey = u64;
 
 pub trait Policy {
     // called when a key is accessed and found in cache
