@@ -8,7 +8,7 @@ use crate::core::policy::{Policy, CacheKey};
 /// - remove  : dequeue from the front.
 /// - victim  : peek at the front — oldest admitted key, read-only.
 pub struct FifoPolicy {
-    pub order: VecDeque<CacheKey>,
+    order: VecDeque<CacheKey>,
 }
 
 impl FifoPolicy {
@@ -22,7 +22,7 @@ impl FifoPolicy {
 impl Policy for FifoPolicy {
     fn on_hit(&mut self, _key: CacheKey) {}
 
-    fn on_miss(&mut self, _key: CacheKey) -> Option<CacheKey> {}
+    fn on_miss(&mut self, _key: CacheKey) {}
 
     fn insert(&mut self, key: CacheKey) {
         self.order.push_back(key);
