@@ -1,8 +1,8 @@
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Metrics {
-    pub request_count: usize,
-    pub hit_count: usize,
-    pub eviction_count: usize,
+    pub request_count: u64,
+    pub hit_count: u64,
+    pub eviction_count: u64,
 }
 
 impl Metrics {
@@ -12,13 +12,20 @@ impl Metrics {
 
     pub fn hit_rate(&self) -> f64 {
         if self.request_count == 0 {
-            return 0.0;
+            0.0;
         }
-        self.hit_count as f64 / self.request_count as f64
+        else {
+            self.hit_count as f64 / self.request_count as f64
+        }
     }
 
     pub fn miss_rate(&self) -> f64 {
-        1.0 - self.hit_rate()
+        if self.request_count == 0 {
+            0.0
+        }
+        else{
+            1.0 - self.hit_rate()
+        }
     }
 
     pub fn record_hit(&mut self) {
@@ -57,7 +64,7 @@ mod tests {
         assert_eq!(m.hit_count, 0);
         assert_eq!(m.eviction_count, 0);
         assert_eq!(m.hit_rate(), 0.0);
-        assert_eq!(m.miss_rate(), 1.0);
+        assert_eq!(m.miss_rate(), 0.0);
     }
 
     #[test]
@@ -66,6 +73,7 @@ mod tests {
         m.record_hit();
         m.record_hit();
         m.record_miss();
+
         assert_eq!(m.request_count, 3);
         assert_eq!(m.hit_count, 2);
         assert!((m.hit_rate() - 2.0 / 3.0).abs() < f64::EPSILON);
@@ -107,6 +115,7 @@ mod tests {
         m.record_miss();
         m.record_eviction();
         m.reset();
+        
         assert_eq!(m.request_count, 0);
         assert_eq!(m.hit_count, 0);
         assert_eq!(m.eviction_count, 0);
