@@ -1,18 +1,17 @@
 use std::fmt;
 
 pub struct Clock {
-    pub tick: u64
+    tick: u64
 }
 
 impl Clock {
     pub fn new() -> Self {
-        Clock {
-            tick: 0
-        }
+        Self { tick: 0 }
     }
 
-    pub fn tick_up(&mut self) {
+    pub fn tick(&mut self) -> u64 {
         self.tick += 1;
+        self.tick
     }
 
     pub fn get_tick(&self) -> u64 {
@@ -26,10 +25,6 @@ impl Clock {
 
 impl fmt::Display for Clock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Current tick: {}",
-            self.tick
-        )
+        write!(f, "Current tick: {}", self.tick)
     }
 }

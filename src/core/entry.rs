@@ -10,7 +10,7 @@ pub struct Entry<T> {
 
 impl<T> Entry<T> {
     pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64) -> Self {
-        Entry {
+        Self {
             key,
             size_in_bytes,
             insertion_tick,
@@ -21,12 +21,13 @@ impl<T> Entry<T> {
 
     pub fn on_access(&mut self, current_tick: u64) {
         self.last_access_tick = current_tick;
-        self.access_count += 1;
+        self.access_count = self.access_count.saturating_add(1);
         
     }
 
     pub fn frequency(&self, current_tick: u64) -> f64 {
-        return self.access_count as f64 / (current_tick - self.insertion_tick + 1) as f64;
+        let age = current_tick.saturating_sub(self.insertion_tick) + 1;
+        self.access_count as f64 / age as f64
     }
 }
 
