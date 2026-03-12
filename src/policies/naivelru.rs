@@ -1,4 +1,4 @@
-use crate::policy::{Policy, CacheKey}; //bringing policy trait into scope
+use crate::core::policy::{Policy, CacheKey}; //bringing policy trait into scope
 use indexmap::IndexSet;
 
 pub struct LruPolicy {
@@ -21,9 +21,10 @@ impl Policy for LruPolicy {
         self.order.insert(key);
     }
 
-    fn on_miss(&mut self, key: CacheKey) {}
+    fn on_miss(&mut self, _key: CacheKey) {}
 
     fn insert(&mut self, key: CacheKey) {
+        self.order.shift_remove(&key);
         self.order.insert(key);
     }
 

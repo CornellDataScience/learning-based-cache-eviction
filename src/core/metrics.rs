@@ -12,7 +12,7 @@ impl Metrics {
 
     pub fn hit_rate(&self) -> f64 {
         if self.request_count == 0 {
-            0.0;
+            0.0
         }
         else {
             self.hit_count as f64 / self.request_count as f64
