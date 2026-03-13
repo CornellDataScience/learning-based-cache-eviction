@@ -1,4 +1,4 @@
-use learning_based_cache_eviction::core::time::Clock;
+use lbce::core::time::Clock;
 
 #[test]
 fn test_clock_init() {
