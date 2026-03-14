@@ -1,4 +1,4 @@
-use learning_based_cache_eviction::core::entry::Entry;
+use lbce::core::entry::Entry;
 
 #[test]
 fn test_entry_init() {
