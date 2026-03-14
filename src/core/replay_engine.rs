@@ -1,5 +1,5 @@
 use crate::core::cache::Cache;
-use crate::core::trace::Trace;
+use crate::core::trace::CacheTrace;
 use crate::core::policy::Policy;
 use crate::core::metrics::Metrics;
 use std::fmt;
@@ -38,11 +38,13 @@ impl fmt::Display for ReplayResult {
     }
 }
 
-pub fn replay_trace<P: Policy, const MM_SIZE: usize>(trace: &Trace, cache: &mut Cache<P, MM_SIZE>) -> ReplayResult {
+pub fn replay_trace<P: Policy, const MM_SIZE: usize>(trace: &CacheTrace, cache: &mut Cache<P, MM_SIZE>) -> ReplayResult {
     // might want to reset cache metrics here but i didn't do that in case we wanted to test a phase shift
     // but something to keep in mind because cache could have been used before replaying this trace
-    for req in trace.get_requests() {
-        cache.access(req.key);
+
+    // changed this to use key instead i don't see a need for an additional request struct
+    for key in trace.get_requests() {
+        cache.access(key);
     }
     let results = ReplayResult::from_metrics(&cache.metrics);
     return results

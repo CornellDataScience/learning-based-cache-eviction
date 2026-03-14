@@ -7,10 +7,12 @@ use crate::core::policy::{CacheKey, Policy};
 use crate::core::time::Clock;
 use crate::core::trace::CacheTrace;
 use crate::core::trace::CacheEvent;
+use crate::core::mainmemory::ENTRY_SIZE;
+
 
 pub struct Cache<P: Policy, const MM_SIZE: usize> {
     pub capacity: usize,
-    pub store: HashMap<CacheKey, Entry<CacheKey>>,
+    pub store: HashMap<CacheKey, Entry<CacheKey, ENTRY_SIZE>>,
     pub policy: P,
     pub metrics: Metrics,
     pub clock: Clock,
@@ -28,6 +30,7 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
             clock: Clock::new(),
             main_memory,
             cache_trace: CacheTrace::new(true), // enabled is always set to true - need to change
+            // see trace.rs, i think it doesn't make sense to have trace be either enabled or disabled
         }
     }
 
@@ -66,11 +69,11 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
         }
 
         // Fetch from main memory and insert into cache
-        if let Some(obj) = self.main_memory.fetch(&key) {
-            let entry = Entry::new(obj.key, obj.size_in_bytes, tick);
-            self.store.insert(key, entry);
+        if let Some(entry) = self.main_memory.fetch(&key) {
+            let size_bytes = entry.size_in_bytes;
+            self.store.insert(key, entry.clone());
             self.policy.insert(key);
-            self.cache_trace.record_event(CacheEvent::Insert{key, size_bytes: obj.size_in_bytes, tick});
+            self.cache_trace.record_event(CacheEvent::Insert{key, size_bytes, tick});
         }
     }
 }

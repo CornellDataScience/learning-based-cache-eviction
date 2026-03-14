@@ -1,21 +1,24 @@
 use std::fmt;
 
-pub struct Entry<T> {
+#[derive(Clone)]
+pub struct Entry<T, const N : usize> {
     pub key: T,
     pub size_in_bytes: usize,
     pub insertion_tick: u64,
     pub last_access_tick: u64,
-    pub access_count: u64
+    pub access_count: u64,
+    pub bytes: [u8; N],
 }
 
-impl<T> Entry<T> {
-    pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64) -> Self {
+impl<T, const N : usize> Entry<T, N> {
+    pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64, bytes: [u8; N]) -> Self {
         Self {
             key,
             size_in_bytes,
             insertion_tick,
             last_access_tick: insertion_tick,
             access_count: 1,
+            bytes,
         }
     }
 
@@ -31,7 +34,7 @@ impl<T> Entry<T> {
     }
 }
 
-impl<T: fmt::Display> fmt::Display for Entry<T> {
+impl<T: fmt::Display, const N : usize> fmt::Display for Entry<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -40,7 +43,7 @@ impl<T: fmt::Display> fmt::Display for Entry<T> {
             self.size_in_bytes,
             self.insertion_tick,
             self.last_access_tick,
-            self.access_count
+            self.access_count,
         )
     }
 }
