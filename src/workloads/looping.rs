@@ -1,14 +1,20 @@
+use crate::core::policy::CacheKey
 use crate::workloads::workload::Workload;
 
 pub struct LoopingWorkload {
-    keys: Vec<u64>,
+    keys: Vec<CacheKey>,
     current_index: usize,
     total_requests: usize,
     generated_requests: usize,
 }
 
 impl LoopingWorkload {
-    pub fn new(keys: Vec<u64>, total_requests: usize) -> Self {
+    pub fn new(keys: Vec<CacheKey>, total_requests: usize) -> Self {
+        assert!(
+            !keys.is_empty(),
+            "LoopingWorkload requires at least one key"
+        );
+        
         Self {
             keys,
             current_index: 0,
@@ -19,13 +25,15 @@ impl LoopingWorkload {
 }
 
 impl Workload for LoopingWorkload {
-    fn next_request(&mut self) -> Option<u64> {
+    fn next_request(&mut self) -> Option<CacheKey> {
         if self.generated_requests >= self.total_requests {
-            return None; // workload is complete
+            return None;
         }
+        
         let key = self.keys[self.current_index];
-        self.current_index = (self.current_index + 1) % self.keys.len(); // loop back to start
+        self.current_index = (self.current_index + 1) % self.keys.len();
         self.generated_requests += 1;
+        
         Some(key)
     }
 
