@@ -38,14 +38,13 @@ impl fmt::Display for ReplayResult {
     }
 }
 
-pub fn replay_trace<P: Policy, const MM_SIZE: usize>(trace: &CacheTrace, cache: &mut Cache<P, MM_SIZE>) -> ReplayResult {
-    // might want to reset cache metrics here but i didn't do that in case we wanted to test a phase shift
-    // but something to keep in mind because cache could have been used before replaying this trace
-
-    // changed this to use key instead i don't see a need for an additional request struct
-    for key in trace.get_requests() {
-        cache.access(key);
+pub fn replay_trace<P: Policy, const MM_SIZE: usize>(
+    trace: &RequestTrace,
+    cache: &mut Cache<P, MM_SIZE>,
+) -> ReplayResult {
+    for request in trace.requests() {
+        cache.access(request.key);
     }
-    let results = ReplayResult::from_metrics(&cache.metrics);
-    return results
+
+    ReplayResult::from_metrics(&cache.metrics)
 }

@@ -5,19 +5,17 @@ use crate::core::mainmemory::MainMemory;
 use crate::core::metrics::Metrics;
 use crate::core::policy::{CacheKey, Policy};
 use crate::core::time::Clock;
-use crate::core::trace::CacheTrace;
-use crate::core::trace::CacheEvent;
-use crate::core::mainmemory::ENTRY_SIZE;
+use crate::core::trace::{CacheEvent, EventTrace};
 
 
 pub struct Cache<P: Policy, const MM_SIZE: usize> {
     pub capacity: usize,
-    pub store: HashMap<CacheKey, Entry<CacheKey, ENTRY_SIZE>>,
+    pub store: HashMap<CacheKey, Entry<CacheKey>>,
     pub policy: P,
     pub metrics: Metrics,
     pub clock: Clock,
     pub main_memory: MainMemory<MM_SIZE>,
-    pub cache_trace: CacheTrace,
+    pub event_trace: EventTrace,
 }
 
 impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
@@ -29,8 +27,7 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
             metrics: Metrics::new(),
             clock: Clock::new(),
             main_memory,
-            cache_trace: CacheTrace::new(true), // enabled is always set to true - need to change
-            // see trace.rs, i think it doesn't make sense to have trace be either enabled or disabled
+            event_trace: EventTrace::new(true),
         }
     }
 
@@ -59,8 +56,11 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
         if self.store.len() >= self.capacity {
             if let Some(evict_key) = self.policy.victim() {
                 if let Some(entry) = self.store.get(&evict_key) {
-                    let size_bytes = entry.size_in_bytes;
-                    self.cache_trace.record_event(CacheEvent::Evict{key: evict_key, size_bytes, tick});
+                    self.cache_trace.record_event(CacheEvent::Evict {
+                        key: evict_key,
+                        size_bytes: entry.size_in_bytes,
+                        tick,
+                    });
                 }
                 self.store.remove(&evict_key);
                 self.policy.remove(evict_key);
@@ -70,10 +70,15 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
 
         // Fetch from main memory and insert into cache
         if let Some(entry) = self.main_memory.fetch(&key) {
-            let size_bytes = entry.size_in_bytes;
-            self.store.insert(key, entry.clone());
+            let entry = Entry::new(obj.key, obj.size_in_bytes, tick, obj.bytes.clone());
+            self.store.insert(key, entry);
             self.policy.insert(key);
-            self.cache_trace.record_event(CacheEvent::Insert{key, size_bytes, tick});
+
+            self.cache_trace.record_event(CacheEvent::Insert {
+                key,
+                size_bytes: obj.size_in_bytes,
+                tick,
+            });
         }
     }
 }
