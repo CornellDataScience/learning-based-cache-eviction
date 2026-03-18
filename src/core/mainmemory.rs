@@ -1,16 +1,22 @@
 use std::collections::HashMap;
 
 use crate::core::policy::CacheKey;
+use crate::core::entry::Entry;
 
-#[derive(Debug, Clone)]
 pub struct MemoryObject {
     pub key: CacheKey,
     pub size_in_bytes: usize,
+    pub bytes: Vec<u8>,
 }
 
 impl MemoryObject {
-    pub fn new(key: CacheKey, size_in_bytes: usize) -> Self {
-        Self { key, size_in_bytes }
+    pub fn new(key: CacheKey, bytes: Vec<u8>) -> Self {
+        let size_in_bytes = bytes.len();
+        Self {
+            key,
+            size_in_bytes,
+            bytes,
+        }
     }
 }
 

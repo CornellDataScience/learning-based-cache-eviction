@@ -1,33 +1,77 @@
-// may also want to track byte size of hits/misses/evictions in the future
-#[derive(Debug, Clone)] // allow for auto-formatter printing
+use crate::core::policy::CacheKey;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Request {
+    pub key: CacheKey,
+}
+
+impl Request {
+    pub fn new(key: CacheKey) -> Self {
+        Self { key }
+    }
+}
+
+impl RequestTrace {
+    pub fn new() -> Self {
+        Self {
+            requests: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, request: Request) {
+        self.requests.push(request);
+    }
+
+    pub fn requests(&self) -> &[Request] {
+        &self.requests
+    }
+
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct RequestTrace {
+    requests: Vec<Request>,
+}
+
+
+
+// Internal cache event log for debugging / analysis
+#[derive(Debug, Clone)] 
 pub enum CacheEvent {
     Hit { 
-        key: u64,
+        key: CacheKey,
         tick: u64 
-    }, // found the key in cache
+    },
     Miss { 
-        key: u64,
+        key: CacheKey,
         tick: u64
-    }, // did not locate key in cache
+    },
     Insert { 
-        key: u64, 
+        key: CacheKey, 
         size_bytes: usize, 
         tick: u64 
-    }, // inserted a new key into cache (may cause eviction if cache is full)
+    },
     Evict { 
-        key: u64, 
+        key: CacheKey, 
         size_bytes: usize, 
         tick: u64
-    }, // evicted a key from cache to free up space for new insertions
+    },
 }
 
 #[derive(Debug, Default)]
-pub struct CacheTrace {
+pub struct EventTrace {
     events: Vec<CacheEvent>,
-    enabled: bool, // only enabled during testing/debugging
+    enabled: bool,
 }
 
-impl CacheTrace {
+impl EventTrace {
     pub fn new(enabled: bool) -> Self {
         Self {
             events: Vec::new(),

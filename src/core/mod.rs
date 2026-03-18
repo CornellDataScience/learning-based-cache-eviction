@@ -5,3 +5,4 @@ pub mod metrics;
 pub mod policy;
 pub mod time;
 pub mod trace;
+pub mod replay_engine;
