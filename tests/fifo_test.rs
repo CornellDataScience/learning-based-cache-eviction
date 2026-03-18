@@ -1,5 +1,5 @@
-use learning_based_cache_eviction::policies::fifo::FifoPolicy;
-use learning_based_cache_eviction::core::policy::{Policy, CacheKey};
+use lbce::policies::fifo::FifoPolicy;
+use lbce::core::policy::{Policy, CacheKey};
 
 fn filled(capacity: usize, keys: &[CacheKey]) -> FifoPolicy {
     let mut p = FifoPolicy::new(capacity);
