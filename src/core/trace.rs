@@ -1,48 +1,77 @@
 use crate::core::policy::CacheKey;
 
-// may also want to track byte size of hits/misses/evictions in the future
-#[derive(Debug, Clone)] // allow for auto-formatter printing
+#[derive(Debug, Clone, Copy)]
+pub struct Request {
+    pub key: CacheKey,
+}
+
+impl Request {
+    pub fn new(key: CacheKey) -> Self {
+        Self { key }
+    }
+}
+
+impl RequestTrace {
+    pub fn new() -> Self {
+        Self {
+            requests: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, request: Request) {
+        self.requests.push(request);
+    }
+
+    pub fn requests(&self) -> &[Request] {
+        &self.requests
+    }
+
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct RequestTrace {
+    requests: Vec<Request>,
+}
+
+
+
+// Internal cache event log for debugging / analysis
+#[derive(Debug, Clone)] 
 pub enum CacheEvent {
     Hit { 
         key: CacheKey,
         tick: u64 
-    }, // found the key in cache
+    },
     Miss { 
         key: CacheKey,
         tick: u64
-    }, // did not locate key in cache
+    },
     Insert { 
         key: CacheKey, 
         size_bytes: usize, 
         tick: u64 
-    }, // inserted a new key into cache (may cause eviction if cache is full)
+    },
     Evict { 
         key: CacheKey, 
         size_bytes: usize, 
         tick: u64
-    }, // evicted a key from cache to free up space for new insertions
-}
-
-impl CacheEvent {
-    pub fn key(&self) -> CacheKey {
-        match self {
-            CacheEvent::Hit {key, ..} => *key,
-            CacheEvent::Miss {key, ..} => *key,
-            CacheEvent::Insert {key, ..} => *key,
-            CacheEvent::Evict {key, ..} => *key,
-        }
-    }
+    },
 }
 
 #[derive(Debug, Default)]
-pub struct CacheTrace {
-    // i feel like it doesn't make sense to have a cache trace be either enabled or disabled, 
-    // we should just either add it to the cache or not add it depending on whether or not we want a trace
+pub struct EventTrace {
     events: Vec<CacheEvent>,
-    enabled: bool, // only enabled during testing/debugging
+    enabled: bool,
 }
 
-impl CacheTrace {
+impl EventTrace {
     pub fn new(enabled: bool) -> Self {
         Self {
             events: Vec::new(),
@@ -66,14 +95,5 @@ impl CacheTrace {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
-    }
-
-    // this returns the actual vector
-    pub fn get_requests(&self) -> Vec<CacheKey> {
-        let mut res: Vec<CacheKey> = Vec::new();
-        for event in &self.events {
-            res.push(event.key());
-        }
-        res
     }
 }

@@ -1,17 +1,17 @@
 use std::fmt;
 
 #[derive(Clone)]
-pub struct Entry<T, const N : usize> {
+pub struct Entry<T> {
     pub key: T,
     pub size_in_bytes: usize,
     pub insertion_tick: u64,
     pub last_access_tick: u64,
     pub access_count: u64,
-    pub bytes: [u8; N],
+    pub bytes: Vec<u8>,
 }
 
 impl<T, const N : usize> Entry<T, N> {
-    pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64, bytes: [u8; N]) -> Self {
+    pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64, bytes: Vec<u8>) -> Self {
         Self {
             key,
             size_in_bytes,
