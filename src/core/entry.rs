@@ -10,7 +10,7 @@ pub struct Entry<T> {
     pub bytes: Vec<u8>,
 }
 
-impl<T, const N : usize> Entry<T, N> {
+impl<T> Entry<T> {
     pub fn new(key: T, size_in_bytes: usize, insertion_tick: u64, bytes: Vec<u8>) -> Self {
         Self {
             key,
@@ -34,7 +34,7 @@ impl<T, const N : usize> Entry<T, N> {
     }
 }
 
-impl<T: fmt::Display, const N : usize> fmt::Display for Entry<T, N> {
+impl<T: fmt::Display> fmt::Display for Entry<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
