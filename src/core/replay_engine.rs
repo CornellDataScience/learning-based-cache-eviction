@@ -1,5 +1,5 @@
 use crate::core::cache::Cache;
-use crate::core::trace::CacheTrace;
+use crate::core::trace::RequestTrace;
 use crate::core::policy::Policy;
 use crate::core::metrics::Metrics;
 use std::fmt;

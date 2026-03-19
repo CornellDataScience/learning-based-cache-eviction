@@ -25,7 +25,7 @@ impl ZipfWorkload {
         
         Self {
             keys,
-            dist: WeightedIndex::new(&probabilities).expect("Failed to create weighted index");
+            dist: WeightedIndex::new(&probabilities).expect("Failed to create weighted index"),
             rng: StdRng::seed_from_u64(seed),
             total_requests,
             generated_requests: 0,

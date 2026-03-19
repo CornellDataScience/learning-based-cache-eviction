@@ -39,14 +39,14 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
             entry.on_access(tick);
             self.policy.on_hit(key);
             self.metrics.record_hit();
-            self.cache_trace.record_event(CacheEvent::Hit{key, tick});
+            self.event_trace.record_event(CacheEvent::Hit{key, tick});
             return;
         }
 
         // Miss
         self.metrics.record_miss();
         self.policy.on_miss(key);
-        self.cache_trace.record_event(CacheEvent::Miss{key, tick});
+        self.event_trace.record_event(CacheEvent::Miss{key, tick});
 
         if self.capacity == 0 {
             return;
@@ -56,7 +56,7 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
         if self.store.len() >= self.capacity {
             if let Some(evict_key) = self.policy.victim() {
                 if let Some(entry) = self.store.get(&evict_key) {
-                    self.cache_trace.record_event(CacheEvent::Evict {
+                    self.event_trace.record_event(CacheEvent::Evict {
                         key: evict_key,
                         size_bytes: entry.size_in_bytes,
                         tick,
@@ -69,12 +69,12 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
         }
 
         // Fetch from main memory and insert into cache
-        if let Some(entry) = self.main_memory.fetch(&key) {
+        if let Some(obj) = self.main_memory.fetch(&key) {
             let entry = Entry::new(obj.key, obj.size_in_bytes, tick, obj.bytes.clone());
             self.store.insert(key, entry);
             self.policy.insert(key);
 
-            self.cache_trace.record_event(CacheEvent::Insert {
+            self.event_trace.record_event(CacheEvent::Insert {
                 key,
                 size_bytes: obj.size_in_bytes,
                 tick,

@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 use csv::{Reader, Writer};
 
 use crate::core::policy::CacheKey;
-use crate::core::trace::{CacheEvent, Request, RequestTrace};
+use crate::core::trace::{Request, RequestTrace};
 
 fn hash_key(key: &str) -> CacheKey {
     let mut hasher = DefaultHasher::new();
@@ -26,7 +26,7 @@ pub fn load_request_trace_csv(path: &str) -> RequestTrace {
 
     for result in reader.records() {
 
-        let record = result.expect("Failed to read record");
+        let record: csv::StringRecord = result.expect("Failed to read record");
 
         let key_str = &record[key_index];
 

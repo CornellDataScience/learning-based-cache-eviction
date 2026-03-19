@@ -1,4 +1,4 @@
-use create::core::policy::CacheKey;
+use crate::core::policy::CacheKey;
 use crate::workloads::workload::Workload;
 
 pub struct PhaseWorkload {
