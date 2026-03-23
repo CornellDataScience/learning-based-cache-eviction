@@ -1,10 +1,11 @@
-use crate::core::policy::CacheKey;
+use crate::core::policy::{CacheKey, Policy};
+use crate::policies::lru::LruPolicy;
 use std::collections::HashMap;
 use crate::core::trace::RequestTrace;
 
 #[derive(Clone)]
 pub struct DataEntry {
-    pub time_between_accesses: f64,
+    pub time_between_accesses: Vec<f64>,
     pub exp_decay_counters: Vec<f64>,
     pub access_cnt: f64,
     pub recent_rank: f64,
@@ -14,27 +15,34 @@ pub struct DataEntry {
 }
 
 impl DataEntry {
-    /// Collect all 7 features from DataEntry
-    pub fn collect_all_features(&self) -> (f64, f64, f64, f64, f64, f64, f64) {
-        let exp_decay_recent = self
-            .exp_decay_counters
-            .last()
-            .cloned()
-            .unwrap_or(0.0);
+    /// Collect all features: 32 time-between-accesses (zero-padded), 10 exp decay counters,
+    /// then access_cnt, recent_rank, first_access_time, last_access_time, avg_time_between_accesses.
+    pub fn collect_all_features(&self) -> Vec<f64> {
+        const TBA_WINDOW: usize = 32;
 
-        (
-            self.time_between_accesses,
-            exp_decay_recent,
-            self.access_cnt,
-            self.recent_rank,
-            //may not need first_access_time and last_access_time
-            self.first_access_time,
-            self.last_access_time,
-            self.avg_time_between_accesses,
-        )
+        // Last 32 time-between-accesses, zero-padded at the front if fewer than 32
+        let tba = &self.time_between_accesses;
+        let pad = TBA_WINDOW.saturating_sub(tba.len());
+        let mut features = vec![0.0f64; pad];
+        let start = tba.len().saturating_sub(TBA_WINDOW);
+        features.extend_from_slice(&tba[start..]);
+
+        // All 10 exp decay counters
+        features.extend_from_slice(&self.exp_decay_counters);
+
+        // Scalar features
+        features.push(self.access_cnt);
+        features.push(self.recent_rank);
+        features.push(self.first_access_time);
+        features.push(self.last_access_time);
+        features.push(self.avg_time_between_accesses);
+
+        features
     }
+}
 
-#[derive(Clone)]pub struct CacheState {
+#[derive(Clone)]
+pub struct CacheState {
     entries: HashMap<CacheKey, DataEntry>,
 }
 
@@ -64,52 +72,45 @@ impl Generator {
         }
         next_use
     }
-    
+
     pub fn make_dataset(rt: RequestTrace) -> Vec<CacheState> {
         let mut dataset = Vec::new();
         let mut state = CacheState::new();
         let mut current_time = 0.0;
-
+        let capacity = rt.len();
         let requests = rt.requests();
+        let mut lru = LruPolicy::new(capacity);
+
         for request in requests {
-            // if it's time to evict, then do the following
-            // time between accesses shift left + add new entry
-            // update exp_decay_counters
-            // avg_time_between_accesses = (avg * access_cnt + t) / access_cnt + 1
-            // add 1 to access_cnt
-            // recent_rank - update location of key in concurrent LRU queue before update
-            // if first time accessing key, create first_access_time
-            // write last_access_time
-            let key = request.key.clone();
-        
+            let key = request.key;
+
             if let Some(entry) = state.entries.get_mut(&key) {
-                // Calculate time between accesses
-                entry.time_between_accesses = current_time - entry.last_access_time;
-                
-                // Update exponential decay counters (shift left and add new value)
-                if !entry.exp_decay_counters.is_empty() {
-                    entry.exp_decay_counters.remove(0);
+                let delta_t = current_time - entry.last_access_time;
+
+                // Shift left: push new time delta onto history
+                entry.time_between_accesses.push(delta_t);
+
+                // C_i = 1 + C_i * 2^{-delta_t / 2^{9+i}}
+                for i in 0..10 {
+                    let exponent = -delta_t / ((1u64 << (9 + i)) as f64);
+                    entry.exp_decay_counters[i] = 1.0 + entry.exp_decay_counters[i] * exponent.exp2();
                 }
 
-                entry.exp_decay_counters.push(entry.time_between_accesses);
-                
-                // Update average time between accesses
-                entry.avg_time_between_accesses = 
-                    (entry.avg_time_between_accesses * entry.access_cnt + entry.time_between_accesses) 
+                // avg = (avg * n + delta_t) / (n + 1)
+                entry.avg_time_between_accesses =
+                    (entry.avg_time_between_accesses * entry.access_cnt + delta_t)
                     / (entry.access_cnt + 1.0);
-                
-                // Increment access count
+
                 entry.access_cnt += 1.0;
-                
-                // Update recent rank (lower is more recent)
-                entry.recent_rank += 1.0;
+                entry.last_access_time = current_time;
+                lru.on_hit(key);
             } else {
-                // First time accessing this key
+                // First access: init all counters to zero
                 state.entries.insert(
                     key,
                     DataEntry {
-                        time_between_accesses: 0.0,
-                        exp_decay_counters: Vec::new(),
+                        time_between_accesses: Vec::new(),
+                        exp_decay_counters: vec![0.0; 10],
                         access_cnt: 1.0,
                         recent_rank: 0.0,
                         first_access_time: current_time,
@@ -117,22 +118,20 @@ impl Generator {
                         avg_time_between_accesses: 0.0,
                     },
                 );
+                lru.insert(key);
             }
-            
-            // Update last access time for existing entry
-            if let Some(entry) = state.entries.get_mut(&key) {
-                entry.last_access_time = current_time;
-                entry.recent_rank = 0.0; // Reset rank since it was just accessed
+
+            // Walk LRU list from tail (rank 0, most recent) to head, updating all ranks
+            for (k, rank) in lru.ranks() {
+                if let Some(entry) = state.entries.get_mut(&k) {
+                    entry.recent_rank = rank as f64;
+                }
             }
-            
+
             current_time += 1.0;
             dataset.push(state.clone());
-            // add new entry to dataset
-        }    
+        }
 
         dataset
     }
 }
-
-
-

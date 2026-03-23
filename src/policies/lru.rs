@@ -120,3 +120,19 @@ impl Policy for LruPolicy{
         self.head.map(|head_idx| self.nodes[head_idx].key)
     }
 }
+
+impl LruPolicy {
+    /// Walk from tail (most recent, rank 0) to head (least recent),
+    /// returning (key, rank) pairs for every entry in the list.
+    pub fn ranks(&self) -> Vec<(CacheKey, usize)> {
+        let mut result = Vec::new();
+        let mut rank = 0;
+        let mut current = self.tail;
+        while let Some(idx) = current {
+            result.push((self.nodes[idx].key, rank));
+            rank += 1;
+            current = self.nodes[idx].prev;
+        }
+        result
+    }
+}
