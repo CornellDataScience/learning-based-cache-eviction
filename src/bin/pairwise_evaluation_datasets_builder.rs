@@ -15,7 +15,7 @@ use lbce::data::pairwise_samples::{
     PairwiseDatasetGenerator,
     PairwiseSample,
 };
-use lbce::policies::naivelru::LruPolicy;
+use lbce::policies::belady::BeladyPolicy;
 
 use lbce::workloads::bursty::BurstyWorkload;
 use lbce::workloads::looping::LoopingWorkload;
@@ -214,7 +214,7 @@ impl EvalDatasetBuilder {
 
                 let mut cache = Cache::new(
                     cache_size,
-                    LruPolicy::new(cache_size),
+                    BeladyPolicy::new(&named_trace.trace),
                     mm,
                 );
 
