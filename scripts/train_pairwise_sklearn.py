@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-"""
-Train a lightweight pairwise MLP using scikit-learn.
-
-This is a simpler alternative to the PyTorch script. It keeps the same
-dataset assumptions and preprocessing ideas:
-1. Load train / validation / test CSVs.
-2. Use only the numeric pairwise-difference features.
-3. Fit preprocessing statistics on the training split only.
-4. Train a small MLPClassifier.
-5. Pick the best configuration using validation accuracy.
-6. Evaluate once on the held-out test sets.
-7. Save plots, preprocessing stats, and test metrics.
-"""
-
-from __future__ import annotations
-
 import csv
 import json
 import os
@@ -27,10 +10,16 @@ os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".mplconfig"))
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+# silence annoying invalid value encountered in matmul, which I'm pretty sure isn't a problem?
+np.seterr(invalid = "ignore", over="ignore", divide="ignore")
+
 import pandas as pd
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.neural_network import MLPClassifier
-
+# from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.tree import DecisionTreeClassifier
 
 TRAIN_CSV = REPO_ROOT / "pairwise_training_dataset.csv"
 VAL_CSV = REPO_ROOT / "pairwise_validation_dataset.csv"
@@ -106,8 +95,6 @@ def fit_preprocessor(
     config: PreprocessConfig,
 ) -> dict:
     x_train = train_df[feature_columns].to_numpy(dtype=np.float32)
-    # select only the rows in which the trace_name is mixed_interleaved
-    
 
     if config.use_signed_log:
         x_train = signed_log1p(x_train)
@@ -151,7 +138,7 @@ def apply_preprocessor(df: pd.DataFrame, stats: dict) -> tuple[np.ndarray, np.nd
     mean = np.asarray(stats["mean"], dtype=np.float32)
     std = np.asarray(stats["std"], dtype=np.float32)
 
-    x = (x - mean) / std
+    x = (x - mean) / std # normalize after clipping
     y = df[LABEL_COLUMN].to_numpy(dtype=np.int64)
     return x, y
 
@@ -163,6 +150,34 @@ def evaluate(model: MLPClassifier, x: np.ndarray, y: np.ndarray) -> dict:
         "accuracy": accuracy_score(y, preds),
         "loss": log_loss(y, probs),
     }
+
+
+def evaluate_by_trace(
+    model: MLPClassifier,
+    x: np.ndarray,
+    y: np.ndarray,
+    trace_names: np.ndarray,
+) -> list[dict]:
+    probs = model.predict_proba(x)[:, 1]
+    preds = (probs >= 0.5).astype(np.int64)
+
+    rows: list[dict] = []
+    for trace in sorted(pd.unique(trace_names)):
+        mask = trace_names == trace
+        y_t = y[mask]
+        probs_t = probs[mask]
+        preds_t = preds[mask]
+        rows.append(
+            {
+                "trace_name": str(trace),
+                "rows": int(mask.sum()),
+                "accuracy": float(accuracy_score(y_t, preds_t)),
+                "loss": float(log_loss(y_t, probs_t)),
+                "positive_rate": float(y_t.mean()),
+            }
+        )
+
+    return rows
 
 
 def save_loss_plot(loss_curve: list[float], output_path: Path) -> None:
@@ -178,33 +193,77 @@ def save_loss_plot(loss_curve: list[float], output_path: Path) -> None:
     plt.close()
 
 
+def compute_feature_correlation(
+    train_df: pd.DataFrame,
+    feature_columns: list[str],
+) -> pd.DataFrame:
+    x = train_df[feature_columns].copy()
+    return x.corr(method="spearman")
+
+
+def save_correlation_outputs(
+    corr_df: pd.DataFrame,
+    csv_output_path: Path,
+    plot_output_path: Path,
+) -> None:
+    corr_df.to_csv(csv_output_path)
+
+    n_features = corr_df.shape[0]
+    fig_size = min(24, max(8, 0.28 * n_features))
+
+    plt.figure(figsize=(fig_size, fig_size))
+    im = plt.imshow(corr_df.values, cmap="coolwarm", vmin=-1.0, vmax=1.0)
+    plt.colorbar(im, fraction=0.046, pad=0.04, label="Spearman correlation")
+
+    text_size = max(3, min(8, int(220 / max(n_features, 1))))
+    for i in range(n_features):
+        for j in range(n_features):
+            value = float(corr_df.iat[i, j])
+            text_color = "white" if abs(value) >= 0.5 else "black"
+            plt.text(
+                j,
+                i,
+                f"{value:.2f}",
+                ha="center",
+                va="center",
+                color=text_color,
+                fontsize=text_size,
+            )
+
+    if n_features <= 50:
+        ticks = np.arange(n_features)
+        plt.xticks(ticks, corr_df.columns, rotation=90, fontsize=7)
+        plt.yticks(ticks, corr_df.index, fontsize=7)
+    else:
+        plt.xticks([])
+        plt.yticks([])
+
+    plt.title("Feature Correlation Matrix (Train Split)")
+    plt.tight_layout()
+    plt.savefig(plot_output_path, dpi=150)
+    plt.close()
+
+
 def run_experiment(
     preprocess_config: PreprocessConfig,
     train_config: TrainConfig,
-) -> tuple[dict, MLPClassifier, dict]:
+) -> tuple[dict, MLPClassifier, dict, pd.DataFrame]:
     train_df = load_split(TRAIN_CSV)
     val_df = load_split(VAL_CSV)
     feature_columns = get_feature_columns(train_df)
 
     print_split_summary("train", train_df)
     print_split_summary("validation", val_df)
-    print(f"\nfeature_columns ({len(feature_columns)}): {feature_columns}")
 
-    # use_columns = ["mixed_interleaved"]
-    use_columns = "all"
-    if type(use_columns) == list:
-        train_df = train_df[train_df["trace_name"].isin(use_columns)]
-    elif use_columns != "all":
-        train_df = train_df[train_df["trace_name"] == use_columns]
-    
-    # print('train df size before oversampling', train_df.shape[0])
+    exclude_columns = ["resident_time_since_last_diff", "resident_frequency_diff", "decay_0_diff", "decay_1_diff", "gap_count_diff"]
+    print("excluding columns", exclude_columns)
+    if exclude_columns:
+        train_df = train_df.drop(columns=exclude_columns, errors="ignore")
+        val_df = val_df.drop(columns=exclude_columns, errors="ignore")
+        feature_columns = [c for c in feature_columns if c not in exclude_columns]
 
-    # oversample zipf by x times relative to other traces during training
-    # target_zipf_count = int(train_df[train_df["trace_name"] != "zipf"].shape[0]*0.5)
-    # zipf_rows = train_df[train_df["trace_name"] == "zipf"].sample(target_zipf_count, replace=True, random_state=train_config.seed)
-    # train_df = pd.concat([train_df, zipf_rows], ignore_index=True)
-    # print("total size of train_df after oversampling", train_df.shape[0])
-    
+    print("feature columns after excluding", len(feature_columns))
+    corr_df = compute_feature_correlation(train_df, feature_columns)
 
     stats = fit_preprocessor(train_df, feature_columns, preprocess_config)
     x_train, y_train = apply_preprocessor(train_df, stats)
@@ -218,57 +277,30 @@ def run_experiment(
         batch_size=train_config.batch_size,
         learning_rate_init=train_config.learning_rate_init,
         max_iter=train_config.max_iter,
-        early_stopping=False,
+        early_stopping=True,
         random_state=train_config.seed,
         verbose=True,
     )
-
-    # try random forest
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.ensemble import AdaBoostClassifier
-    from sklearn.tree import DecisionTreeClassifier
-    from xgboost import XGBClassifier
     
-    # model = RandomForestClassifier(
-    #     n_estimators=200,
-    #     max_depth=None,
-    #     min_samples_split=2,
-    #     min_samples_leaf=1,
-    #     max_features="sqrt",
-    #     n_jobs=-1,
-    #     random_state=train_config.seed,
-    #     verbose=1,
+    # model = AdaBoostClassifier(
+    #     estimator=DecisionTreeClassifier(
+    #         max_depth=2
+    #     ),
+    #     n_estimators=100,
+    #     learning_rate=0.5,
+    #     random_state=train_config.seed
     # )
-
-    # model = XGBClassifier(
-    #     n_estimators=300,
-    #     max_depth=6,
-    #     learning_rate=0.1,
-    #     subsample=0.8,
-    #     colsample_bytree=0.8,
-    #     reg_lambda=1.0,
-    #     reg_alpha=0.0,
-    #     objective="binary:logistic",
-    #     eval_metric="logloss",
-    #     use_label_encoder=False,
-    #     n_jobs=-1,
-    #     random_state=train_config.seed,
-    #     verbosity=1,
-    # )
-
-    model = AdaBoostClassifier(
-        estimator=DecisionTreeClassifier(
-            max_depth=2
-        ),
-        n_estimators=200,
-        learning_rate=0.5,
-        random_state=train_config.seed
-    )
 
     
     model.fit(x_train, y_train)
 
     val_metrics = evaluate(model, x_val, y_val)
+    val_breakdown = evaluate_by_trace(
+        model,
+        x_val,
+        y_val,
+        val_df["trace_name"].to_numpy(),
+    )
 
     result = {
         "preprocess_config": asdict(preprocess_config),
@@ -277,9 +309,10 @@ def run_experiment(
             "hidden_layer_sizes": list(train_config.hidden_layer_sizes),
         },
         "val_metrics": val_metrics,
+        "val_breakdown": val_breakdown,
         # "loss_curve": [float(x) for x in model.loss_curve_],
     }
-    return result, model, stats
+    return result, model, stats, corr_df
 
 
 def evaluate_all_tests(model: MLPClassifier, stats: dict) -> list[dict]:
@@ -355,7 +388,7 @@ def main() -> None:
     print(asdict(preprocess_config))
     print({**asdict(train_config), "hidden_layer_sizes": list(train_config.hidden_layer_sizes)})
 
-    result, model, stats = run_experiment(preprocess_config, train_config)
+    result, model, stats, corr_df = run_experiment(preprocess_config, train_config)
 
     best_result = result
     best_model = model
@@ -380,15 +413,21 @@ def main() -> None:
     with (ARTIFACT_DIR / "preprocessing_stats_sklearn.json").open("w") as f:
         json.dump(best_stats, f, indent=2)
 
+    save_correlation_outputs(
+        corr_df,
+        ARTIFACT_DIR / "feature_correlation_matrix_spearman.csv",
+        ARTIFACT_DIR / "feature_correlation_matrix_spearman.png",
+    )
+
     # save_loss_plot(best_result["loss_curve"], ARTIFACT_DIR / "sklearn_loss_curve.png")
 
     test_rows = evaluate_all_tests(best_model, best_stats)
     save_test_metrics(test_rows, ARTIFACT_DIR / "test_metrics_sklearn.csv")
 
-    print("\nTest results:")
-    for row in test_rows:
+    print("\nValidation breakdown by trace:")
+    for row in best_result["val_breakdown"]:
         print(
-            f"{row['dataset']}: "
+            f"{row['trace_name']}: "
             f"accuracy={row['accuracy']:.4f}, "
             f"loss={row['loss']:.4f}, "
             f"rows={row['rows']}"
