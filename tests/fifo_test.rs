@@ -1,5 +1,5 @@
+use lbce::core::policy::{CacheKey, Policy};
 use lbce::policies::fifo::FifoPolicy;
-use lbce::core::policy::{Policy, CacheKey};
 
 fn filled(capacity: usize, keys: &[CacheKey]) -> FifoPolicy {
     let mut p = FifoPolicy::new(capacity);

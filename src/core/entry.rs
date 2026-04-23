@@ -25,7 +25,6 @@ impl<T> Entry<T> {
     pub fn on_access(&mut self, current_tick: u64) {
         self.last_access_tick = current_tick;
         self.access_count = self.access_count.saturating_add(1);
-        
     }
 
     pub fn frequency(&self, current_tick: u64) -> f64 {

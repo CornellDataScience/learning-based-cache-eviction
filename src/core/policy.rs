@@ -2,7 +2,6 @@
 pub type CacheKey = u64;
 
 pub trait Policy {
-
     fn on_hit(&mut self, key: CacheKey);
 
     fn on_miss(&mut self, key: CacheKey);

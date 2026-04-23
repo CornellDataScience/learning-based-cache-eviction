@@ -40,7 +40,10 @@ impl PairwiseCsvWriter {
             "gap_count_diff",
         ];
 
-        write!(writer, "trace_name,cache_size,request_index,tick,key0,key1,y")?;
+        write!(
+            writer,
+            "trace_name,cache_size,request_index,tick,key0,key1,y"
+        )?;
         for name in base_feature_names {
             write!(writer, ",{}", name)?;
         }

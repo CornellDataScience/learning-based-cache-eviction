@@ -14,7 +14,7 @@ impl LoopingWorkload {
             !keys.is_empty(),
             "LoopingWorkload requires at least one key"
         );
-        
+
         Self {
             keys,
             current_index: 0,
@@ -29,11 +29,11 @@ impl Workload for LoopingWorkload {
         if self.generated_requests >= self.total_requests {
             return None;
         }
-        
+
         let key = self.keys[self.current_index];
         self.current_index = (self.current_index + 1) % self.keys.len();
         self.generated_requests += 1;
-        
+
         Some(key)
     }
 
