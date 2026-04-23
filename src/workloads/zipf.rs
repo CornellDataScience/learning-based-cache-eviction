@@ -1,8 +1,8 @@
 use crate::core::policy::CacheKey;
 use crate::workloads::workload::Workload;
+use rand::SeedableRng;
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
 
 pub struct ZipfWorkload {
     keys: Vec<CacheKey>,
@@ -16,13 +16,13 @@ impl ZipfWorkload {
     pub fn new(keys: Vec<CacheKey>, total_requests: usize, skew: f64, seed: u64) -> Self {
         assert!(!keys.is_empty(), "ZipfWorkload requires at least one key");
         assert!(skew > 0.0, "Zipf skew parameter must be positive");
-        
+
         let probabilities: Vec<f64> = keys
             .iter()
             .enumerate()
             .map(|(i, _)| 1.0 / ((i as f64 + 1.0).powf(skew)))
             .collect();
-        
+
         Self {
             keys,
             dist: WeightedIndex::new(&probabilities).expect("Failed to create weighted index"),
@@ -52,4 +52,3 @@ impl Workload for ZipfWorkload {
         self.generated_requests >= self.total_requests
     }
 }
-

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use lbce::analysis::io::{load_request_trace_csv, write_request_trace_csv};
+use lbce::analysis::summary::Summary;
 use lbce::core::cache::Cache;
 use lbce::core::mainmemory::{MainMemory, MemoryObject};
 use lbce::core::replay_engine::replay_trace;
@@ -9,13 +11,8 @@ use lbce::core::trace::{CacheEvent, Request, RequestTrace};
 use lbce::policies::fifo::FifoPolicy;
 use lbce::policies::naivelru::LruPolicy;
 use lbce::workloads::bursty::BurstyWorkload;
-use lbce::analysis::io::{
-    load_request_trace_csv,
-    write_request_trace_csv,
-};
 use lbce::workloads::looping::LoopingWorkload;
 use lbce::workloads::phase::PhaseWorkload;
-use lbce::analysis::summary::Summary;
 use lbce::workloads::workload::collect_requests;
 use lbce::workloads::zipf::ZipfWorkload;
 
@@ -170,10 +167,22 @@ fn replay_trace_populates_cache_event_trace() {
     let events = cache.event_trace.events();
     assert!(!events.is_empty());
 
-    let hit_count = events.iter().filter(|e| matches!(e, CacheEvent::Hit { .. })).count();
-    let miss_count = events.iter().filter(|e| matches!(e, CacheEvent::Miss { .. })).count();
-    let insert_count = events.iter().filter(|e| matches!(e, CacheEvent::Insert { .. })).count();
-    let evict_count = events.iter().filter(|e| matches!(e, CacheEvent::Evict { .. })).count();
+    let hit_count = events
+        .iter()
+        .filter(|e| matches!(e, CacheEvent::Hit { .. }))
+        .count();
+    let miss_count = events
+        .iter()
+        .filter(|e| matches!(e, CacheEvent::Miss { .. }))
+        .count();
+    let insert_count = events
+        .iter()
+        .filter(|e| matches!(e, CacheEvent::Insert { .. }))
+        .count();
+    let evict_count = events
+        .iter()
+        .filter(|e| matches!(e, CacheEvent::Evict { .. }))
+        .count();
 
     assert_eq!(hit_count, 1);
     assert_eq!(miss_count, 3);

@@ -7,7 +7,6 @@ use crate::core::policy::{CacheKey, Policy};
 use crate::core::time::Clock;
 use crate::core::trace::{CacheEvent, EventTrace};
 
-
 pub struct Cache<P: Policy, const MM_SIZE: usize> {
     pub capacity: usize,
     pub store: HashMap<CacheKey, Entry<CacheKey>>,
@@ -39,14 +38,15 @@ impl<P: Policy, const MM_SIZE: usize> Cache<P, MM_SIZE> {
             entry.on_access(tick);
             self.policy.on_hit(key);
             self.metrics.record_hit();
-            self.event_trace.record_event(CacheEvent::Hit{key, tick});
+            self.event_trace.record_event(CacheEvent::Hit { key, tick });
             return;
         }
 
         // Miss
         self.metrics.record_miss();
         self.policy.on_miss(key);
-        self.event_trace.record_event(CacheEvent::Miss{key, tick});
+        self.event_trace
+            .record_event(CacheEvent::Miss { key, tick });
 
         if self.capacity == 0 {
             return;

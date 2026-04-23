@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
 
 use lbce::core::cache::Cache;
 use lbce::core::trace::{Request, RequestTrace};
@@ -11,9 +11,7 @@ use lbce::core::trace::{Request, RequestTrace};
 use lbce::data::memory_builder::MainMemoryBuilder;
 use lbce::data::pairwise_csv_writer::PairwiseCsvWriter;
 use lbce::data::pairwise_samples::{
-    PairwiseDatasetConfig,
-    PairwiseDatasetGenerator,
-    PairwiseSample,
+    PairwiseDatasetConfig, PairwiseDatasetGenerator, PairwiseSample,
 };
 use lbce::policies::naivelru::LruPolicy;
 
@@ -76,11 +74,7 @@ impl EvalDatasetBuilder {
         output_path: P,
     ) -> std::io::Result<()> {
         let samples = Self::build_validation_dataset::<MM_SIZE>(config);
-        PairwiseCsvWriter::write_to_path(
-            output_path,
-            &samples,
-            config.pairwise.decay_factors.len(),
-        )
+        PairwiseCsvWriter::write_to_path(output_path, &samples, config.pairwise.decay_factors.len())
     }
 
     pub fn build_test_sets<const MM_SIZE: usize>(
@@ -96,13 +90,8 @@ impl EvalDatasetBuilder {
         let phase = Self::make_test_phase_traces();
         let zipf = Self::make_test_zipf_traces(config.seed);
 
-        let pooled_components = [
-            bursty.clone(),
-            looping.clone(),
-            phase.clone(),
-            zipf.clone(),
-        ]
-        .concat();
+        let pooled_components =
+            [bursty.clone(), looping.clone(), phase.clone(), zipf.clone()].concat();
 
         let mixed_concat = vec![NamedTrace {
             name: "test_mixed_concat".to_string(),
@@ -146,7 +135,12 @@ impl EvalDatasetBuilder {
         );
         out.insert(
             "test_mixed_interleaved".to_string(),
-            Self::materialize_samples::<MM_SIZE>(mixed_interleaved.clone(), config, &mut rng, false),
+            Self::materialize_samples::<MM_SIZE>(
+                mixed_interleaved.clone(),
+                config,
+                &mut rng,
+                false,
+            ),
         );
 
         let pooled = [
@@ -179,11 +173,7 @@ impl EvalDatasetBuilder {
         for (name, samples) in datasets {
             let path = output_dir.join(format!("{name}.csv"));
             println!("💾 Writing {}", path.display());
-            PairwiseCsvWriter::write_to_path(
-                path,
-                &samples,
-                config.pairwise.decay_factors.len(),
-            )?;
+            PairwiseCsvWriter::write_to_path(path, &samples, config.pairwise.decay_factors.len())?;
         }
 
         Ok(())
@@ -212,11 +202,7 @@ impl EvalDatasetBuilder {
                     config.default_object_size,
                 );
 
-                let mut cache = Cache::new(
-                    cache_size,
-                    LruPolicy::new(cache_size),
-                    mm,
-                );
+                let mut cache = Cache::new(cache_size, LruPolicy::new(cache_size), mm);
 
                 let samples = PairwiseDatasetGenerator::generate(
                     &named_trace.name,
@@ -251,10 +237,7 @@ impl EvalDatasetBuilder {
         all_samples
     }
 
-    fn build_validation_trace_suite(
-        config: &EvalBuildConfig,
-        rng: &mut StdRng,
-    ) -> Vec<NamedTrace> {
+    fn build_validation_trace_suite(config: &EvalBuildConfig, rng: &mut StdRng) -> Vec<NamedTrace> {
         let mut traces = Vec::new();
         traces.extend(Self::make_validation_bursty_traces());
         traces.extend(Self::make_validation_looping_traces());
@@ -329,10 +312,7 @@ impl EvalDatasetBuilder {
         ]
     }
 
-    fn make_validation_mixed_traces(
-        existing: &[NamedTrace],
-        rng: &mut StdRng,
-    ) -> Vec<NamedTrace> {
+    fn make_validation_mixed_traces(existing: &[NamedTrace], rng: &mut StdRng) -> Vec<NamedTrace> {
         let picked: Vec<RequestTrace> = existing
             .choose_multiple(rng, 4)
             .map(|nt| nt.trace.clone())
@@ -506,10 +486,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    if let Err(e) = EvalDatasetBuilder::write_test_csvs::<MM_SIZE, _>(
-        &config,
-        "pairwise_test_datasets",
-    ) {
+    if let Err(e) =
+        EvalDatasetBuilder::write_test_csvs::<MM_SIZE, _>(&config, "pairwise_test_datasets")
+    {
         eprintln!("Failed to write test CSVs: {}", e);
         std::process::exit(1);
     }

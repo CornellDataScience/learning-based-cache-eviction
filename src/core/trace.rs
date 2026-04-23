@@ -40,28 +40,26 @@ pub struct RequestTrace {
     requests: Vec<Request>,
 }
 
-
-
 // Internal cache event log for debugging / analysis
-#[derive(Debug, Clone)] 
+#[derive(Debug, Clone)]
 pub enum CacheEvent {
-    Hit { 
+    Hit {
         key: CacheKey,
-        tick: u64 
+        tick: u64,
     },
-    Miss { 
+    Miss {
         key: CacheKey,
-        tick: u64
+        tick: u64,
     },
-    Insert { 
-        key: CacheKey, 
-        size_bytes: usize, 
-        tick: u64 
+    Insert {
+        key: CacheKey,
+        size_bytes: usize,
+        tick: u64,
     },
-    Evict { 
-        key: CacheKey, 
-        size_bytes: usize, 
-        tick: u64
+    Evict {
+        key: CacheKey,
+        size_bytes: usize,
+        tick: u64,
     },
 }
 

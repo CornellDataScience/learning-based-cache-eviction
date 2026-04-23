@@ -1,5 +1,5 @@
+use crate::core::policy::{CacheKey, Policy};
 use std::collections::VecDeque;
-use crate::core::policy::{Policy, CacheKey};
 
 /// Tracks insertion order in a VecDeque.
 /// - on_hit  : no-op — FIFO never changes a key's position after admission.

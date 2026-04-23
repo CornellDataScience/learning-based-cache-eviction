@@ -1,7 +1,7 @@
 use std::fmt;
 
 pub struct Clock {
-    tick: u64
+    tick: u64,
 }
 
 impl Clock {

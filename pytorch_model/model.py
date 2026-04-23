@@ -1,81 +1,42 @@
+import argparse
+import json
+
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import pandas as pd
-import numpy as np
+from torch.utils.data import DataLoader
 
-FEATURE_COLS = [
-    "resident_age_diff",
-    "resident_time_since_last_diff",
-    "resident_access_count_diff",
-    "resident_frequency_diff",
-    "global_age_since_first_request_diff",
-    "global_time_since_last_request_diff",
-    "global_total_request_count_diff",
-    "last_interarrival_diff",
-    "avg_interarrival_diff",
-    "gap_count_diff",
-    "decay_0_diff",
-    "decay_1_diff",
-    "decay_2_diff",
-]
-LABEL_COL = "y"
+from common import (
+    FEATURE_COLS,
+    PairwiseDataset,
+    EvictionMLP,
+    default_checkpoint_path,
+    default_metadata_path,
+    default_train_csv,
+    default_val_csv,
+)
 
 
-def fit_zscore(x: np.ndarray):
-    mean = x.mean(axis=0)
-    std = x.std(axis=0)
-    std[std == 0] = 1.0
-    return mean, std
-
-
-class PairwiseDataset(Dataset):
-    def __init__(self, csv_path: str, mean=None, std=None):
-        df = pd.read_csv(csv_path)
-        x = df[FEATURE_COLS].values.astype(np.float32)
-        x = np.sign(x) * np.log1p(np.abs(x))
-        if mean is None or std is None:
-            mean, std = fit_zscore(x)
-        x = (x - mean) / std
-        self.x = torch.tensor(x, dtype=torch.float32)
-        self.y = torch.tensor(df[LABEL_COL].values, dtype=torch.float32)
-        self.mean = mean
-        self.std = std
-
-    def __len__(self):
-        return len(self.y)
-
-    def __getitem__(self, idx):
-        return self.x[idx], self.y[idx]
-
-
-class EvictionMLP(nn.Module):
-    def __init__(self, input_dim: int, dropout: float = 0.0):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(32, 1),
-        )
-
-    def forward(self, x):
-        return self.net(x).squeeze(-1)
-
-
-def train(train_csv: str, val_csv: str, epochs: int = 20, batch_size: int = 64, lr: float = 3e-4):
-    train_set = PairwiseDataset(train_csv)
-    val_set = PairwiseDataset(val_csv, mean=train_set.mean, std=train_set.std)
+def train(
+    train_csv: str,
+    val_csv: str,
+    epochs: int = 20,
+    batch_size: int = 64,
+    lr: float = 3e-4,
+):
+    train_set = PairwiseDataset(train_csv, transform="log1p", norm="zscore")
+    val_set = PairwiseDataset(
+        val_csv,
+        transform="log1p",
+        norm="zscore",
+        norm_params=train_set.norm_params,
+    )
     n_train = len(train_set)
     n_val = len(val_set)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=batch_size)
 
-    model = EvictionMLP(input_dim=len(FEATURE_COLS), dropout=0.0)
+    model = EvictionMLP(input_dim=len(FEATURE_COLS), dropout=0.0, activation="relu")
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.BCEWithLogitsLoss()
 
@@ -106,17 +67,42 @@ def train(train_csv: str, val_csv: str, epochs: int = 20, batch_size: int = 64, 
             f"val_acc={correct/total:.4f}"
         )
 
-    return model, train_set.mean, train_set.std
+    return model, train_set.norm_params["mean"], train_set.norm_params["std"]
 
 
 if __name__ == "__main__":
-    import sys
-    train_csv = sys.argv[1] if len(sys.argv) > 1 else "pairwise_training_dataset.csv"
-    val_csv = sys.argv[2] if len(sys.argv) > 2 else "pairwise_validation_dataset.csv"
-    model, mean, std = train(train_csv, val_csv)
-    torch.save({
-        "state_dict": model.state_dict(),
-        "mean": torch.tensor(mean, dtype=torch.float32),
-        "std": torch.tensor(std, dtype=torch.float32),
-    }, "eviction_mlp.pt")
-    print("Saved model to eviction_mlp.pt")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-csv", default=str(default_train_csv()))
+    parser.add_argument("--val-csv", default=str(default_val_csv()))
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--output", default=str(default_checkpoint_path()))
+    args = parser.parse_args()
+
+    model, mean, std = train(
+        args.train_csv,
+        args.val_csv,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+    )
+    state_dict = model.state_dict()
+    state_dict["norm.mean"] = torch.tensor(mean, dtype=torch.float32)
+    state_dict["norm.std"] = torch.tensor(std, dtype=torch.float32)
+    torch.save({"state_dict": state_dict}, args.output)
+    metadata_path = default_metadata_path()
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "transform": "log1p",
+                "normalization": "zscore",
+                "feature_cols": FEATURE_COLS,
+                "mean": mean.tolist(),
+                "std": std.tolist(),
+            },
+            indent=2,
+        )
+    )
+    print(f"Saved model to {args.output}")
+    print(f"Saved metadata to {metadata_path}")

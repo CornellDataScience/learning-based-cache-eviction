@@ -2,7 +2,7 @@ use lbce::core::policy::Policy;
 use lbce::policies::lru::LruPolicy;
 
 #[test]
-fn test_lru(){
+fn test_lru() {
     let mut policy = LruPolicy::new(3);
 
     policy.insert(1);
