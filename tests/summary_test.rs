@@ -1,5 +1,5 @@
-use lbce::core::trace::{CacheTrace, CacheEvent};
 use lbce::analysis::summary::Summary;
+use lbce::core::trace::{CacheEvent, CacheTrace};
 
 #[test]
 fn test_summary_empty_trace() {
@@ -72,8 +72,16 @@ fn test_summary_with_insert_evict_events() {
     let mut trace = CacheTrace::new(true);
     trace.record_event(CacheEvent::Hit { key: 1, tick: 1 });
     trace.record_event(CacheEvent::Miss { key: 2, tick: 2 });
-    trace.record_event(CacheEvent::Insert { key: 3, size_bytes: 64, tick: 3 });
-    trace.record_event(CacheEvent::Evict { key: 4, size_bytes: 64, tick: 4 });
+    trace.record_event(CacheEvent::Insert {
+        key: 3,
+        size_bytes: 64,
+        tick: 3,
+    });
+    trace.record_event(CacheEvent::Evict {
+        key: 4,
+        size_bytes: 64,
+        tick: 4,
+    });
 
     let summary = Summary::summarize(&trace);
 
@@ -84,12 +92,18 @@ fn test_summary_with_insert_evict_events() {
 #[test]
 fn test_summary_repeated_accesses() {
     let mut trace = CacheTrace::new(true);
-    
+
     for i in 0..10 {
         if i % 2 == 0 {
-            trace.record_event(CacheEvent::Hit { key: 1, tick: i as u64 });
+            trace.record_event(CacheEvent::Hit {
+                key: 1,
+                tick: i as u64,
+            });
         } else {
-            trace.record_event(CacheEvent::Hit { key: 2, tick: i as u64 });
+            trace.record_event(CacheEvent::Hit {
+                key: 2,
+                tick: i as u64,
+            });
         }
     }
 

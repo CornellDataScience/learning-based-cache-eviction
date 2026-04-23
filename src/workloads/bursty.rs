@@ -5,7 +5,7 @@ pub struct BurstyWorkload {
     num_cycles: usize,
     quiet_length: usize,
     burst_length: usize,
-    background_keys: usize, 
+    background_keys: usize,
     burst_key: CacheKey,
     current_cycle: usize,
     position_in_cycle: usize,

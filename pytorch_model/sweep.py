@@ -5,105 +5,15 @@ Varies: normalization, feature transforms, batch size, learning rate, optimizer,
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import pandas as pd
-import numpy as np
+from torch.utils.data import DataLoader
 
-FEATURE_COLS = [
-    "resident_age_diff",
-    "resident_time_since_last_diff",
-    "resident_access_count_diff",
-    "resident_frequency_diff",
-    "global_age_since_first_request_diff",
-    "global_time_since_last_request_diff",
-    "global_total_request_count_diff",
-    "last_interarrival_diff",
-    "avg_interarrival_diff",
-    "gap_count_diff",
-    "decay_0_diff",
-    "decay_1_diff",
-    "decay_2_diff",
-]
-LABEL_COL = "y"
-
-
-# ── Preprocessing ─────────────────────────────────────────────────────────────
-
-def apply_transform(x: np.ndarray, transform: str) -> np.ndarray:
-    """Element-wise feature transform applied before normalization."""
-    if transform == "none":
-        return x
-    elif transform == "log1p":
-        # sign-preserving log1p for signed diffs
-        return np.sign(x) * np.log1p(np.abs(x))
-    elif transform == "sqrt":
-        return np.sign(x) * np.sqrt(np.abs(x))
-    elif transform == "tanh":
-        # soft clipping — reduces outlier influence
-        return np.tanh(x / (np.std(x, axis=0) + 1e-8))
-    raise ValueError(transform)
-
-
-def normalize(x: np.ndarray, norm: str, mean=None, std=None, q01=None, q99=None):
-    """Normalize features. Returns (x_normed, params_dict)."""
-    if norm == "none":
-        return x, {}
-    elif norm == "zscore":
-        if mean is None:
-            mean = x.mean(axis=0)
-            std  = x.std(axis=0) + 1e-8
-        return (x - mean) / std, {"mean": mean, "std": std}
-    elif norm == "minmax":
-        if q01 is None:
-            q01 = x.min(axis=0)
-            q99 = x.max(axis=0)
-        denom = (q99 - q01) + 1e-8
-        return (x - q01) / denom, {"q01": q01, "q99": q99}
-    elif norm == "robust":
-        # scale by IQR, center at median
-        if mean is None:
-            mean = np.median(x, axis=0)
-            std  = (np.percentile(x, 75, axis=0) - np.percentile(x, 25, axis=0)) + 1e-8
-        return (x - mean) / std, {"mean": mean, "std": std}
-    raise ValueError(norm)
-
-
-class PairwiseDataset(Dataset):
-    def __init__(self, csv_path, transform="none", norm="zscore", norm_params=None):
-        df = pd.read_csv(csv_path)
-        x = df[FEATURE_COLS].values.astype(np.float32)
-        x = apply_transform(x, transform)
-        x, params = normalize(x, norm, **(norm_params or {}))
-        self.norm_params = params
-        self.x = torch.tensor(x, dtype=torch.float32)
-        self.y = torch.tensor(df[LABEL_COL].values, dtype=torch.float32)
-
-    def __len__(self):
-        return len(self.y)
-
-    def __getitem__(self, idx):
-        return self.x[idx], self.y[idx]
-
-
-# ── Model ─────────────────────────────────────────────────────────────────────
-
-class EvictionMLP(nn.Module):
-    def __init__(self, input_dim: int, dropout: float = 0.0, activation: str = "relu"):
-        super().__init__()
-        act = {"relu": nn.ReLU, "gelu": nn.GELU, "leakyrelu": nn.LeakyReLU}[activation]
-        layers = [
-            nn.Linear(input_dim, 64), act(),
-        ]
-        if dropout > 0:
-            layers.append(nn.Dropout(dropout))
-        layers += [nn.Linear(64, 32), act()]
-        if dropout > 0:
-            layers.append(nn.Dropout(dropout))
-        layers.append(nn.Linear(32, 1))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x).squeeze(-1)
+from common import (
+    FEATURE_COLS,
+    PairwiseDataset,
+    EvictionMLP,
+    default_train_csv,
+    default_val_csv,
+)
 
 
 # ── Curated configs ───────────────────────────────────────────────────────────
@@ -187,8 +97,8 @@ CONFIGS = [
 ]
 
 EPOCHS = 15
-TRAIN_CSV = "pairwise_training_dataset.csv"
-VAL_CSV   = "pairwise_validation_dataset.csv"
+TRAIN_CSV = str(default_train_csv())
+VAL_CSV = str(default_val_csv())
 
 
 def run_config(cfg):

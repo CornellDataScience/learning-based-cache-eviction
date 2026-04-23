@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
 
 use lbce::core::cache::Cache;
 use lbce::core::trace::{Request, RequestTrace};
@@ -11,9 +11,7 @@ use lbce::core::trace::{Request, RequestTrace};
 use lbce::data::memory_builder::MainMemoryBuilder;
 use lbce::data::pairwise_csv_writer::PairwiseCsvWriter;
 use lbce::data::pairwise_samples::{
-    PairwiseDatasetConfig,
-    PairwiseDatasetGenerator,
-    PairwiseSample,
+    PairwiseDatasetConfig, PairwiseDatasetGenerator, PairwiseSample,
 };
 use lbce::policies::naivelru::LruPolicy;
 
@@ -78,8 +76,7 @@ impl TrainingDatasetBuilder {
 
         let mut rng = StdRng::seed_from_u64(config.seed);
 
-        let mut all_named_traces =
-            Self::build_synthetic_trace_suite(config, &mut rng);
+        let mut all_named_traces = Self::build_synthetic_trace_suite(config, &mut rng);
         println!("📊 Generated {} synthetic traces", all_named_traces.len());
 
         all_named_traces.extend(real_traces.iter().cloned());
@@ -101,11 +98,7 @@ impl TrainingDatasetBuilder {
                     config.default_object_size,
                 );
 
-                let mut cache = Cache::new(
-                    cache_size,
-                    LruPolicy::new(cache_size),
-                    mm,
-                );
+                let mut cache = Cache::new(cache_size, LruPolicy::new(cache_size), mm);
 
                 let samples = PairwiseDatasetGenerator::generate(
                     &named_trace.name,
@@ -123,17 +116,11 @@ impl TrainingDatasetBuilder {
                     &mut rng,
                 );
 
-                println!(
-                    "      Kept {} samples after downsampling",
-                    sampled.len()
-                );
+                println!("      Kept {} samples after downsampling", sampled.len());
 
                 all_samples.extend(sampled);
 
-                println!(
-                    "      Total dataset size so far: {}",
-                    all_samples.len()
-                );
+                println!("      Total dataset size so far: {}", all_samples.len());
             }
         }
 
@@ -148,10 +135,7 @@ impl TrainingDatasetBuilder {
             all_samples.truncate(config.max_samples_total);
         }
 
-        println!(
-            "\n✅ Final dataset size: {} samples",
-            all_samples.len()
-        );
+        println!("\n✅ Final dataset size: {} samples", all_samples.len());
 
         all_samples
     }
@@ -161,8 +145,7 @@ impl TrainingDatasetBuilder {
         real_traces: &[NamedTrace],
         output_path: P,
     ) -> std::io::Result<()> {
-        let samples =
-            Self::build_pairwise_training_dataset::<MM_SIZE>(config, real_traces);
+        let samples = Self::build_pairwise_training_dataset::<MM_SIZE>(config, real_traces);
 
         println!("\n💾 Writing dataset to CSV...");
 
@@ -219,34 +202,30 @@ impl TrainingDatasetBuilder {
     fn make_looping_traces() -> Vec<NamedTrace> {
         vec![NamedTrace {
             name: "looping".to_string(),
-            trace: Self::materialize_workload(
-                LoopingWorkload::new((0..64).collect(), 4000),
-            ),
+            trace: Self::materialize_workload(LoopingWorkload::new((0..64).collect(), 4000)),
         }]
     }
 
     fn make_phase_traces() -> Vec<NamedTrace> {
         vec![NamedTrace {
             name: "phase".to_string(),
-            trace: Self::materialize_workload(
-                PhaseWorkload::new(6, 32, 500),
-            ),
+            trace: Self::materialize_workload(PhaseWorkload::new(6, 32, 500)),
         }]
     }
 
     fn make_zipf_traces(seed: u64) -> Vec<NamedTrace> {
         vec![NamedTrace {
             name: "zipf".to_string(),
-            trace: Self::materialize_workload(
-                ZipfWorkload::new((0..128).collect(), 5000, 1.1, seed),
-            ),
+            trace: Self::materialize_workload(ZipfWorkload::new(
+                (0..128).collect(),
+                5000,
+                1.1,
+                seed,
+            )),
         }]
     }
 
-    fn make_mixed_traces(
-        existing: &[NamedTrace],
-        rng: &mut StdRng,
-    ) -> Vec<NamedTrace> {
+    fn make_mixed_traces(existing: &[NamedTrace], rng: &mut StdRng) -> Vec<NamedTrace> {
         if existing.len() < 2 {
             return Vec::new();
         }
@@ -291,9 +270,7 @@ impl TrainingDatasetBuilder {
         out
     }
 
-    pub fn interleave_traces_round_robin(
-        traces: &[RequestTrace],
-    ) -> RequestTrace {
+    pub fn interleave_traces_round_robin(traces: &[RequestTrace]) -> RequestTrace {
         let mut out = RequestTrace::new();
         let mut positions = vec![0usize; traces.len()];
         let mut remaining = true;

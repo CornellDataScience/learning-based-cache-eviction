@@ -1,7 +1,7 @@
-use lbce::workloads::zipf::ZipfWorkload;
 use lbce::workloads::looping::LoopingWorkload;
-use std::collections::HashMap;
 use lbce::workloads::workload::Workload;
+use lbce::workloads::zipf::ZipfWorkload;
+use std::collections::HashMap;
 
 // LOOPING TESTS
 #[test]
@@ -36,7 +36,6 @@ fn test_looping_workload_cycle() {
     assert_eq!(results, vec![1, 2, 3, 1, 2, 3]);
 }
 
-
 // ZIPF TESTS
 #[test]
 fn test_zipf_workload_completion() {
@@ -56,7 +55,7 @@ fn test_zipf_distribution_skew() {
     let keys = vec![1, 2, 3, 4, 5];
     let total_requests = 10000;
     let mut w = ZipfWorkload::new(keys.clone(), total_requests);
-    
+
     let mut counts = HashMap::new();
     // update hashmap with counts as you see each key
     while let Some(k) = w.next_request() {

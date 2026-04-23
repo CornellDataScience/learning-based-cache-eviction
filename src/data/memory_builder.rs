@@ -14,10 +14,7 @@ impl MainMemoryBuilder {
 
         for req in trace.requests() {
             if !mm.contains(&req.key) {
-                mm.insert(MemoryObject::new(
-                    req.key,
-                    vec![0u8; default_object_size],
-                ));
+                mm.insert(MemoryObject::new(req.key, vec![0u8; default_object_size]));
             }
         }
 
