@@ -1,33 +1,33 @@
-use crate::core::policy::{Policy, CacheKey}; //bringing policy trait into scope
+use crate::core::policy::{CacheKey, Policy}; //bringing policy trait into scope
 use std::collections::HashMap;
 
 struct Node {
     key: CacheKey,
     next: Option<usize>,
-    prev: Option<usize>
+    prev: Option<usize>,
 }
 
-pub struct LruPolicy{
+pub struct LruPolicy {
     nodes: Vec<Node>,
     map: HashMap<CacheKey, usize>,
     head: Option<usize>, //least recent O(1) access
     tail: Option<usize>, //most recent
-    free: Vec<usize>, //recyclable indices
+    free: Vec<usize>,    //recyclable indices
 }
 
-impl LruPolicy{
+impl LruPolicy {
     //returns a new LRU policy
-    pub fn new(capacity: usize) -> Self{
+    pub fn new(capacity: usize) -> Self {
         //initialize LRU policy
         let nodes = (0..capacity)
             .map(|_| Node {
                 key: 0,
                 next: None,
-                prev: None
+                prev: None,
             })
             .collect();
 
-        Self{
+        Self {
             nodes: nodes,
             map: HashMap::with_capacity(capacity),
             head: None,
@@ -37,31 +37,31 @@ impl LruPolicy{
     }
 }
 
-impl Policy for LruPolicy{
-    fn on_hit(&mut self, key: CacheKey){
+impl Policy for LruPolicy {
+    fn on_hit(&mut self, key: CacheKey) {
         let idx = *self.map.get(&key).expect("Key not found in LRU policy");
-        
+
         //already most recent (tail), nothing to do
-        if Some(idx) == self.tail{
-            return; 
+        if Some(idx) == self.tail {
+            return;
         }
-        
+
         //extract prev, next nodes
         let (prev, next) = {
             let node = &self.nodes[idx];
             (node.prev, node.next)
         };
 
-        match prev{
+        match prev {
             Some(p) => self.nodes[p].next = next,
-            None => self.head = next //current index is the head
+            None => self.head = next, //current index is the head
         }
 
-        if let Some(next_idx) = next{
+        if let Some(next_idx) = next {
             self.nodes[next_idx].prev = prev;
         }
 
-        if let Some(tail_idx) = self.tail{
+        if let Some(tail_idx) = self.tail {
             self.nodes[tail_idx].next = Some(idx);
         }
 
@@ -72,22 +72,21 @@ impl Policy for LruPolicy{
 
     fn on_miss(&mut self, _key: CacheKey) {}
 
-    fn insert(&mut self, key: CacheKey){
+    fn insert(&mut self, key: CacheKey) {
         debug_assert!(!self.map.contains_key(&key));
-        
+
         let idx = self.free.pop().expect("No free nodes available");
 
         //create new node
         self.nodes[idx] = Node {
-            key, 
-            next: None, 
+            key,
+            next: None,
             prev: self.tail,
         };
 
-        if let Some(tail_idx) = self.tail{
+        if let Some(tail_idx) = self.tail {
             self.nodes[tail_idx].next = Some(idx);
-        } 
-        else{
+        } else {
             self.head = Some(idx); //first node
         }
 
@@ -95,7 +94,7 @@ impl Policy for LruPolicy{
         self.map.insert(key, idx);
     }
 
-    fn remove(&mut self, key: CacheKey){
+    fn remove(&mut self, key: CacheKey) {
         let idx = self.map.remove(&key).expect("Key not found in LRU policy");
 
         let (prev, next) = {
@@ -103,14 +102,14 @@ impl Policy for LruPolicy{
             (node.prev, node.next)
         };
 
-        match prev{
+        match prev {
             Some(p) => self.nodes[p].next = next,
-            None => self.head = next //current index is the head
+            None => self.head = next, //current index is the head
         }
 
-        match next{
+        match next {
             Some(n) => self.nodes[n].prev = prev,
-            None => self.tail = prev //current index is tail
+            None => self.tail = prev, //current index is tail
         }
 
         self.free.push(idx); //recycle index

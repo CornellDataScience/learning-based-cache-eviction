@@ -75,8 +75,7 @@ impl FeatureState {
         self.avg_interarrival = if self.gap_count == 0 {
             delta
         } else {
-            (self.avg_interarrival * self.gap_count as f32 + delta)
-                / (self.gap_count as f32 + 1.0)
+            (self.avg_interarrival * self.gap_count as f32 + delta) / (self.gap_count as f32 + 1.0)
         };
         self.gap_count += 1;
 
@@ -146,11 +145,8 @@ impl PairwiseDatasetGenerator {
                         let key0 = candidates[i];
                         let key1 = candidates[j];
 
-                        let cmp = Self::compare_candidates_by_future_use(
-                            key0,
-                            key1,
-                            &future_positions,
-                        );
+                        let cmp =
+                            Self::compare_candidates_by_future_use(key0, key1, &future_positions);
 
                         if cmp == Ordering::Equal && config.skip_ties {
                             continue;
@@ -224,10 +220,8 @@ impl PairwiseDatasetGenerator {
             match feature_state.get_mut(&key) {
                 Some(fs) => fs.update_on_request(now_tick, &config.decay_factors),
                 None => {
-                    feature_state.insert(
-                        key,
-                        FeatureState::new(now_tick, config.decay_factors.len()),
-                    );
+                    feature_state
+                        .insert(key, FeatureState::new(now_tick, config.decay_factors.len()));
                 }
             }
         }
@@ -287,8 +281,7 @@ impl PairwiseDatasetGenerator {
         decay_dims: usize,
     ) -> Vec<f32> {
         let resident_age = decision_tick.saturating_sub(entry.insertion_tick) as f32;
-        let resident_time_since_last =
-            decision_tick.saturating_sub(entry.last_access_tick) as f32;
+        let resident_time_since_last = decision_tick.saturating_sub(entry.last_access_tick) as f32;
 
         let mut v = vec![
             resident_age,

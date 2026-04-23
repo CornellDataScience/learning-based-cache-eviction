@@ -1,7 +1,7 @@
 use crate::core::cache::Cache;
-use crate::core::trace::RequestTrace;
-use crate::core::policy::Policy;
 use crate::core::metrics::Metrics;
+use crate::core::policy::Policy;
+use crate::core::trace::RequestTrace;
 use std::fmt;
 
 pub struct ReplayResult {
@@ -29,11 +29,7 @@ impl fmt::Display for ReplayResult {
         write!(
             f,
             "Request Count: {}\nHit count: {}\nEviction Count: {}\nHit Rate: {:.3}\nMiss Rate: {:.3}",
-            self.request_count,
-            self.hit_count,
-            self.eviction_count,
-            self.hit_rate,
-            self.miss_rate
+            self.request_count, self.hit_count, self.eviction_count, self.hit_rate, self.miss_rate
         )
     }
 }

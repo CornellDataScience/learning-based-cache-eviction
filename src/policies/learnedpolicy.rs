@@ -1,0 +1,402 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::core::policy::{CacheKey, Policy};
+use crate::deployed::{EvictionMLPNormalized, FEATURE_DIM};
+
+type MyBackend = burn_ndarray::NdArray<f32>;
+
+const DEFAULT_DECAY_FACTORS: [f32; 3] = [0.5, 0.8, 0.95];
+const DEFAULT_SHORTLIST_K: usize = 4;
+
+#[derive(Clone, Debug)]
+struct ResidentState {
+    insertion_tick: u64,
+    last_access_tick: u64,
+    access_count: u64,
+}
+
+impl ResidentState {
+    fn new(now_tick: u64) -> Self {
+        Self {
+            insertion_tick: now_tick,
+            last_access_tick: now_tick,
+            access_count: 1,
+        }
+    }
+
+    fn on_access(&mut self, now_tick: u64) {
+        self.last_access_tick = now_tick;
+        self.access_count = self.access_count.saturating_add(1);
+    }
+
+    fn frequency(&self, now_tick: u64) -> f32 {
+        let age = now_tick
+            .saturating_sub(self.insertion_tick)
+            .saturating_add(1) as f32;
+        self.access_count as f32 / age
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FeatureState {
+    first_request_tick: u64,
+    last_request_tick: u64,
+    total_request_count: u64,
+    last_interarrival: f32,
+    avg_interarrival: f32,
+    gap_count: u64,
+    decay_counters: Vec<f32>,
+}
+
+impl FeatureState {
+    fn new(now_tick: u64, decay_dims: usize) -> Self {
+        Self {
+            first_request_tick: now_tick,
+            last_request_tick: now_tick,
+            total_request_count: 1,
+            last_interarrival: 0.0,
+            avg_interarrival: 0.0,
+            gap_count: 0,
+            decay_counters: vec![1.0; decay_dims],
+        }
+    }
+
+    fn observe(&mut self, now_tick: u64, decay_factors: &[f32]) {
+        let delta = now_tick.saturating_sub(self.last_request_tick) as f32;
+
+        self.last_interarrival = delta;
+        self.avg_interarrival = if self.gap_count == 0 {
+            delta
+        } else {
+            (self.avg_interarrival * self.gap_count as f32 + delta) / (self.gap_count as f32 + 1.0)
+        };
+        self.gap_count = self.gap_count.saturating_add(1);
+
+        for (counter, alpha) in self
+            .decay_counters
+            .iter_mut()
+            .zip(decay_factors.iter().copied())
+        {
+            *counter = *counter * alpha.powf(delta) + 1.0;
+        }
+
+        self.total_request_count = self.total_request_count.saturating_add(1);
+        self.last_request_tick = now_tick;
+    }
+}
+
+pub struct LearnedPolicy {
+    model: Option<EvictionMLPNormalized<MyBackend>>,
+    model_path: PathBuf,
+    shortlist_k: usize,
+    debug: bool,
+    tick: u64,
+    pending_miss: Option<CacheKey>,
+    residents: HashMap<CacheKey, ResidentState>,
+    history: HashMap<CacheKey, FeatureState>,
+    decay_factors: Vec<f32>,
+}
+
+impl LearnedPolicy {
+    pub fn new() -> Self {
+        Self::from_path("eviction_mlp.pt")
+    }
+
+    pub fn from_path(path: impl AsRef<Path>) -> Self {
+        Self::with_decay_factors(path, DEFAULT_DECAY_FACTORS.to_vec())
+    }
+
+    pub fn with_decay_factors(path: impl AsRef<Path>, decay_factors: Vec<f32>) -> Self {
+        Self::with_config(path, decay_factors, DEFAULT_SHORTLIST_K)
+    }
+
+    pub fn with_shortlist_k(path: impl AsRef<Path>, shortlist_k: usize) -> Self {
+        Self::with_config(path, DEFAULT_DECAY_FACTORS.to_vec(), shortlist_k)
+    }
+
+    pub fn with_config(
+        path: impl AsRef<Path>,
+        decay_factors: Vec<f32>,
+        shortlist_k: usize,
+    ) -> Self {
+        Self::with_config_and_debug(path, decay_factors, shortlist_k, false)
+    }
+
+    pub fn with_config_and_debug(
+        path: impl AsRef<Path>,
+        decay_factors: Vec<f32>,
+        shortlist_k: usize,
+        debug: bool,
+    ) -> Self {
+        let device = Default::default();
+        let path_buf = path.as_ref().to_path_buf();
+        let model = match EvictionMLPNormalized::<MyBackend>::load(&path_buf, &device) {
+            Ok(model) => Some(model),
+            Err(err) => {
+                eprintln!("{err}");
+                None
+            }
+        };
+
+        Self {
+            model,
+            model_path: path_buf,
+            shortlist_k: shortlist_k.max(1),
+            debug,
+            tick: 0,
+            pending_miss: None,
+            residents: HashMap::new(),
+            history: HashMap::new(),
+            decay_factors,
+        }
+    }
+
+    pub fn without_model() -> Self {
+        Self::without_model_with_shortlist_k(DEFAULT_SHORTLIST_K)
+    }
+
+    pub fn without_model_with_shortlist_k(shortlist_k: usize) -> Self {
+        Self {
+            model: None,
+            model_path: PathBuf::from("eviction_mlp.pt"),
+            shortlist_k: shortlist_k.max(1),
+            debug: false,
+            tick: 0,
+            pending_miss: None,
+            residents: HashMap::new(),
+            history: HashMap::new(),
+            decay_factors: DEFAULT_DECAY_FACTORS.to_vec(),
+        }
+    }
+
+    pub fn model_path(&self) -> &Path {
+        &self.model_path
+    }
+
+    pub fn shortlist_k(&self) -> usize {
+        self.shortlist_k
+    }
+
+    pub fn debug_enabled(&self) -> bool {
+        self.debug
+    }
+
+    fn record_request(&mut self, key: CacheKey) {
+        match self.history.get_mut(&key) {
+            Some(state) => state.observe(self.tick, &self.decay_factors),
+            None => {
+                self.history
+                    .insert(key, FeatureState::new(self.tick, self.decay_factors.len()));
+            }
+        }
+    }
+
+    fn extract_features(&self, key: CacheKey) -> [f32; FEATURE_DIM] {
+        let resident = self
+            .residents
+            .get(&key)
+            .expect("resident key missing from learned policy");
+
+        let resident_age = self.tick.saturating_sub(resident.insertion_tick) as f32;
+        let resident_time_since_last = self.tick.saturating_sub(resident.last_access_tick) as f32;
+
+        let mut values = Vec::with_capacity(FEATURE_DIM);
+        values.push(resident_age);
+        values.push(resident_time_since_last);
+        values.push(resident.access_count as f32);
+        values.push(resident.frequency(self.tick));
+
+        if let Some(history) = self.history.get(&key) {
+            values.push(self.tick.saturating_sub(history.first_request_tick) as f32);
+            values.push(self.tick.saturating_sub(history.last_request_tick) as f32);
+            values.push(history.total_request_count as f32);
+            values.push(history.last_interarrival);
+            values.push(history.avg_interarrival);
+            values.push(history.gap_count as f32);
+            values.extend(history.decay_counters.iter().copied());
+        } else {
+            values.extend(std::iter::repeat_n(0.0, 6 + self.decay_factors.len()));
+        }
+
+        values
+            .try_into()
+            .expect("learned policy generated an unexpected feature dimension")
+    }
+
+    fn pair_features(&self, key0: CacheKey, key1: CacheKey) -> [f32; FEATURE_DIM] {
+        let phi0 = self.extract_features(key0);
+        let phi1 = self.extract_features(key1);
+
+        let mut diff = [0.0; FEATURE_DIM];
+        for idx in 0..FEATURE_DIM {
+            diff[idx] = phi0[idx] - phi1[idx];
+        }
+        diff
+    }
+
+    fn fallback_victim(&self) -> Option<CacheKey> {
+        self.residents
+            .iter()
+            .max_by_key(|(_, state)| {
+                (
+                    self.tick.saturating_sub(state.last_access_tick),
+                    self.tick.saturating_sub(state.insertion_tick),
+                )
+            })
+            .map(|(&key, _)| key)
+    }
+
+    fn shortlist_candidates(&self) -> Vec<CacheKey> {
+        let mut keys: Vec<CacheKey> = self.residents.keys().copied().collect();
+        keys.sort_by_key(|key| {
+            let state = self
+                .residents
+                .get(key)
+                .expect("resident missing while building learned-policy shortlist");
+            (state.last_access_tick, state.insertion_tick, *key)
+        });
+        keys.truncate(self.shortlist_k.min(keys.len()));
+        keys
+    }
+}
+
+impl Policy for LearnedPolicy {
+    fn on_hit(&mut self, key: CacheKey) {
+        self.tick = self.tick.saturating_add(1);
+        self.pending_miss = None;
+
+        if let Some(resident) = self.residents.get_mut(&key) {
+            resident.on_access(self.tick);
+        }
+        self.record_request(key);
+    }
+
+    fn on_miss(&mut self, key: CacheKey) {
+        self.tick = self.tick.saturating_add(1);
+        self.pending_miss = Some(key);
+    }
+
+    fn insert(&mut self, key: CacheKey) {
+        self.residents.insert(key, ResidentState::new(self.tick));
+        self.record_request(key);
+
+        if self.pending_miss == Some(key) {
+            self.pending_miss = None;
+        }
+    }
+
+    fn remove(&mut self, key: CacheKey) {
+        self.residents.remove(&key);
+    }
+
+    fn victim(&mut self) -> Option<CacheKey> {
+        let keys = self.shortlist_candidates();
+        if keys.is_empty() {
+            return None;
+        }
+        if keys.len() == 1 {
+            return keys.first().copied();
+        }
+
+        let Some(model) = &self.model else {
+            return self.fallback_victim();
+        };
+
+        if self.debug {
+            eprintln!("[learned] shortlist={keys:?}");
+        }
+
+        let mut scores: HashMap<CacheKey, usize> =
+            keys.iter().copied().map(|key| (key, 0)).collect();
+
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                let key0 = keys[i];
+                let key1 = keys[j];
+                let features = self.pair_features(key0, key1);
+                let logit = model.predict_pair(&features);
+
+                let winner = if logit > 0.0 { key0 } else { key1 };
+                if self.debug {
+                    eprintln!(
+                        "[learned] pair key0={} key1={} logit={:.5} winner={}",
+                        key0, key1, logit, winner
+                    );
+                }
+                *scores
+                    .get_mut(&winner)
+                    .expect("winner must exist in learned policy scores") += 1;
+            }
+        }
+
+        let victim = scores
+            .into_iter()
+            .max_by_key(|(key, score)| {
+                let state = self
+                    .residents
+                    .get(key)
+                    .expect("resident missing while selecting learned-policy victim");
+                (
+                    *score,
+                    self.tick.saturating_sub(state.last_access_tick),
+                    self.tick.saturating_sub(state.insertion_tick),
+                )
+            })
+            .map(|(key, _)| key)
+            .or_else(|| self.fallback_victim());
+
+        if self.debug {
+            eprintln!("[learned] victim={victim:?}");
+        }
+
+        victim
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_behaves_like_lru_for_simple_sequence() {
+        let mut policy = LearnedPolicy::without_model();
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        assert_eq!(policy.victim(), Some(2));
+    }
+
+    #[test]
+    fn miss_does_not_pollute_candidate_history_before_insert() {
+        let mut policy = LearnedPolicy::without_model();
+
+        policy.on_miss(10);
+        assert!(!policy.history.contains_key(&10));
+
+        policy.insert(10);
+        assert!(policy.history.contains_key(&10));
+        assert!(policy.residents.contains_key(&10));
+    }
+
+    #[test]
+    fn shortlist_uses_least_recently_used_candidates() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_miss(3);
+        policy.insert(3);
+        policy.on_hit(1);
+        policy.on_hit(3);
+
+        assert_eq!(policy.shortlist_candidates(), vec![2, 1]);
+        assert_eq!(policy.victim(), Some(2));
+    }
+}

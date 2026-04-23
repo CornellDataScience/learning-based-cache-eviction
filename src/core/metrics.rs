@@ -13,8 +13,7 @@ impl Metrics {
     pub fn hit_rate(&self) -> f64 {
         if self.request_count == 0 {
             0.0
-        }
-        else {
+        } else {
             self.hit_count as f64 / self.request_count as f64
         }
     }
@@ -22,8 +21,7 @@ impl Metrics {
     pub fn miss_rate(&self) -> f64 {
         if self.request_count == 0 {
             0.0
-        }
-        else{
+        } else {
             1.0 - self.hit_rate()
         }
     }
@@ -115,7 +113,7 @@ mod tests {
         m.record_miss();
         m.record_eviction();
         m.reset();
-        
+
         assert_eq!(m.request_count, 0);
         assert_eq!(m.hit_count, 0);
         assert_eq!(m.eviction_count, 0);

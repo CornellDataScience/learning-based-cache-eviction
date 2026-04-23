@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+burn = "0.18"
+burn-ndarray = "0.18"
+burn-import = { version = "0.18", features = ["pytorch"] }
 csv = "1.4.0"
 indexmap = "2"
 rand = "0.8.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
