@@ -199,13 +199,9 @@ impl LearnedPolicy {
             .expect("resident key missing from learned policy");
 
         let resident_age = self.tick.saturating_sub(resident.insertion_tick) as f32;
-        let resident_time_since_last = self.tick.saturating_sub(resident.last_access_tick) as f32;
-
         let mut values = Vec::with_capacity(FEATURE_DIM);
         values.push(resident_age);
-        values.push(resident_time_since_last);
         values.push(resident.access_count as f32);
-        values.push(resident.frequency(self.tick));
 
         if let Some(history) = self.history.get(&key) {
             values.push(self.tick.saturating_sub(history.first_request_tick) as f32);
@@ -213,10 +209,9 @@ impl LearnedPolicy {
             values.push(history.total_request_count as f32);
             values.push(history.last_interarrival);
             values.push(history.avg_interarrival);
-            values.push(history.gap_count as f32);
-            values.extend(history.decay_counters.iter().copied());
+            values.push(history.decay_counters.get(2).copied().unwrap_or(0.0));
         } else {
-            values.extend(std::iter::repeat_n(0.0, 6 + self.decay_factors.len()));
+            values.extend(std::iter::repeat_n(0.0, FEATURE_DIM - 2));
         }
 
         values
