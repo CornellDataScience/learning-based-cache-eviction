@@ -10,7 +10,7 @@ use burn::{
 use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
 use serde::Deserialize;
 
-pub const FEATURE_DIM: usize = 13;
+pub const FEATURE_DIM: usize = 8; //13 before modification, 8 after removing ignored features
 
 #[derive(Module, Debug)]
 pub struct EvictionMLP<B: Backend> {
