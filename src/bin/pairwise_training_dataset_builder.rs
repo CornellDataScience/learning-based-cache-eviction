@@ -77,11 +77,10 @@ impl TrainingDatasetBuilder {
 
         let mut rng = StdRng::seed_from_u64(config.seed);
 
-        let mut all_named_traces = Self::build_synthetic_trace_suite(config, &mut rng);
-        println!("📊 Generated {} synthetic traces", all_named_traces.len());
+        // let mut all_named_traces = Self::build_synthetic_trace_suite(config, &mut rng);
+        // println!("📊 Generated {} synthetic traces", all_named_traces.len());
 
-        all_named_traces.extend(real_traces.iter().cloned());
-
+        let all_named_traces = real_traces.iter().cloned();
         let mut all_samples = Vec::new();
 
         for named_trace in all_named_traces {
@@ -129,16 +128,16 @@ impl TrainingDatasetBuilder {
             }
         }
 
-        println!("\n🔀 Shuffling dataset...");
-        all_samples.shuffle(&mut rng);
+        // println!("\n🔀 Shuffling dataset...");
+        // all_samples.shuffle(&mut rng);
 
-        if all_samples.len() > config.max_samples_total {
-            println!(
-                "✂️ Truncating dataset to {} samples",
-                config.max_samples_total
-            );
-            all_samples.truncate(config.max_samples_total);
-        }
+        // if all_samples.len() > config.max_samples_total {
+        //     println!(
+        //         "✂️ Truncating dataset to {} samples",
+        //         config.max_samples_total
+        //     );
+        //     all_samples.truncate(config.max_samples_total);
+        // }
 
         println!("\n✅ Final dataset size: {} samples", all_samples.len());
 
