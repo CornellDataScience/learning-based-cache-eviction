@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::core::policy::{CacheKey, Policy};
@@ -8,6 +8,51 @@ type MyBackend = burn_ndarray::NdArray<f32>;
 
 const DEFAULT_DECAY_FACTORS: [f32; 3] = [0.5, 0.8, 0.95];
 const DEFAULT_SHORTLIST_K: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionSource {
+    Model,
+    Fallback,
+    SingleCandidate,
+}
+
+#[derive(Clone, Debug)]
+pub struct CandidateSnapshot {
+    pub key: CacheKey,
+    pub features: [f32; FEATURE_DIM],
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingDecision {
+    pub decision_id: u64,
+    pub model_version: u64,
+    pub source: DecisionSource,
+    pub decision_tick: u64,
+    pub miss_key: CacheKey,
+    pub resident_candidates: Vec<CandidateSnapshot>,
+    pub shortlist_candidates: Vec<CacheKey>,
+    pub chosen_victim: CacheKey,
+}
+
+impl PendingDecision {
+    pub fn candidate(&self, key: CacheKey) -> Option<&CandidateSnapshot> {
+        self.resident_candidates
+            .iter()
+            .find(|candidate| candidate.key == key)
+    }
+
+    pub fn pair_features(&self, key0: CacheKey, key1: CacheKey) -> Option<[f32; FEATURE_DIM]> {
+        let phi0 = self.candidate(key0)?.features;
+        let phi1 = self.candidate(key1)?.features;
+
+        let mut diff = [0.0; FEATURE_DIM];
+        for idx in 0..FEATURE_DIM {
+            diff[idx] = phi0[idx] - phi1[idx];
+        }
+
+        Some(diff)
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ResidentState {
@@ -96,6 +141,9 @@ pub struct LearnedPolicy {
     residents: HashMap<CacheKey, ResidentState>,
     history: HashMap<CacheKey, FeatureState>,
     decay_factors: Vec<f32>,
+    model_version: u64,
+    next_decision_id: u64,
+    pending_decisions: VecDeque<PendingDecision>,
 }
 
 impl LearnedPolicy {
@@ -149,6 +197,9 @@ impl LearnedPolicy {
             residents: HashMap::new(),
             history: HashMap::new(),
             decay_factors,
+            model_version: 0,
+            next_decision_id: 0,
+            pending_decisions: VecDeque::new(),
         }
     }
 
@@ -167,6 +218,9 @@ impl LearnedPolicy {
             residents: HashMap::new(),
             history: HashMap::new(),
             decay_factors: DEFAULT_DECAY_FACTORS.to_vec(),
+            model_version: 0,
+            next_decision_id: 0,
+            pending_decisions: VecDeque::new(),
         }
     }
 
@@ -180,6 +234,22 @@ impl LearnedPolicy {
 
     pub fn debug_enabled(&self) -> bool {
         self.debug
+    }
+
+    pub fn model_version(&self) -> u64 {
+        self.model_version
+    }
+
+    pub fn pending_decision_count(&self) -> usize {
+        self.pending_decisions.len()
+    }
+
+    pub fn pending_decisions(&self) -> &VecDeque<PendingDecision> {
+        &self.pending_decisions
+    }
+
+    pub fn pop_oldest_pending_decision(&mut self) -> Option<PendingDecision> {
+        self.pending_decisions.pop_front()
     }
 
     fn record_request(&mut self, key: CacheKey) {
@@ -247,15 +317,66 @@ impl LearnedPolicy {
             .map(|(&key, _)| key)
     }
 
-    fn shortlist_candidates(&self) -> Vec<CacheKey> {
+    fn resident_keys_by_priority(&self) -> Vec<CacheKey> {
         let mut keys: Vec<CacheKey> = self.residents.keys().copied().collect();
         keys.sort_by_key(|key| {
             let state = self
                 .residents
                 .get(key)
-                .expect("resident missing while building learned-policy shortlist");
+                .expect("resident missing while ordering learned-policy candidates");
             (state.last_access_tick, state.insertion_tick, *key)
         });
+        keys
+    }
+
+    fn build_pending_decision(
+        &self,
+        chosen_victim: CacheKey,
+        shortlist_candidates: &[CacheKey],
+        source: DecisionSource,
+        decision_id: u64,
+    ) -> PendingDecision {
+        let miss_key = self
+            .pending_miss
+            .expect("pending miss must exist when recording a learned-policy decision");
+
+        let resident_candidates = self
+            .resident_keys_by_priority()
+            .into_iter()
+            .map(|key| CandidateSnapshot {
+                key,
+                features: self.extract_features(key),
+            })
+            .collect();
+
+        PendingDecision {
+            decision_id,
+            model_version: self.model_version,
+            source,
+            decision_tick: self.tick,
+            miss_key,
+            resident_candidates,
+            shortlist_candidates: shortlist_candidates.to_vec(),
+            chosen_victim,
+        }
+    }
+
+    fn record_pending_decision(
+        &mut self,
+        chosen_victim: CacheKey,
+        shortlist_candidates: &[CacheKey],
+        source: DecisionSource,
+    ) {
+        let decision_id = self.next_decision_id;
+        self.next_decision_id = self.next_decision_id.saturating_add(1);
+
+        let snapshot =
+            self.build_pending_decision(chosen_victim, shortlist_candidates, source, decision_id);
+        self.pending_decisions.push_back(snapshot);
+    }
+
+    fn shortlist_candidates(&self) -> Vec<CacheKey> {
+        let mut keys = self.resident_keys_by_priority();
         keys.truncate(self.shortlist_k.min(keys.len()));
         keys
     }
@@ -295,62 +416,66 @@ impl Policy for LearnedPolicy {
         if keys.is_empty() {
             return None;
         }
-        if keys.len() == 1 {
-            return keys.first().copied();
-        }
+        let (victim, source) = if keys.len() == 1 {
+            (keys[0], DecisionSource::SingleCandidate)
+        } else if let Some(model) = &self.model {
+            if self.debug {
+                eprintln!("[learned] shortlist={keys:?}");
+            }
 
-        let Some(model) = &self.model else {
-            return self.fallback_victim();
+            let mut scores: HashMap<CacheKey, usize> =
+                keys.iter().copied().map(|key| (key, 0)).collect();
+
+            for i in 0..keys.len() {
+                for j in (i + 1)..keys.len() {
+                    let key0 = keys[i];
+                    let key1 = keys[j];
+                    let features = self.pair_features(key0, key1);
+                    let logit = model.predict_pair(&features);
+
+                    let winner = if logit > 0.0 { key0 } else { key1 };
+                    if self.debug {
+                        eprintln!(
+                            "[learned] pair key0={} key1={} logit={:.5} winner={}",
+                            key0, key1, logit, winner
+                        );
+                    }
+                    *scores
+                        .get_mut(&winner)
+                        .expect("winner must exist in learned policy scores") += 1;
+                }
+            }
+
+            let victim = scores
+                .into_iter()
+                .max_by_key(|(key, score)| {
+                    let state = self
+                        .residents
+                        .get(key)
+                        .expect("resident missing while selecting learned-policy victim");
+                    (
+                        *score,
+                        self.tick.saturating_sub(state.last_access_tick),
+                        self.tick.saturating_sub(state.insertion_tick),
+                    )
+                })
+                .map(|(key, _)| key)
+                .or_else(|| self.fallback_victim())?;
+
+            (victim, DecisionSource::Model)
+        } else {
+            (self.fallback_victim()?, DecisionSource::Fallback)
         };
 
-        if self.debug {
-            eprintln!("[learned] shortlist={keys:?}");
+        if self.pending_miss.is_some() {
+            self.record_pending_decision(victim, &keys, source);
         }
-
-        let mut scores: HashMap<CacheKey, usize> =
-            keys.iter().copied().map(|key| (key, 0)).collect();
-
-        for i in 0..keys.len() {
-            for j in (i + 1)..keys.len() {
-                let key0 = keys[i];
-                let key1 = keys[j];
-                let features = self.pair_features(key0, key1);
-                let logit = model.predict_pair(&features);
-
-                let winner = if logit > 0.0 { key0 } else { key1 };
-                if self.debug {
-                    eprintln!(
-                        "[learned] pair key0={} key1={} logit={:.5} winner={}",
-                        key0, key1, logit, winner
-                    );
-                }
-                *scores
-                    .get_mut(&winner)
-                    .expect("winner must exist in learned policy scores") += 1;
-            }
-        }
-
-        let victim = scores
-            .into_iter()
-            .max_by_key(|(key, score)| {
-                let state = self
-                    .residents
-                    .get(key)
-                    .expect("resident missing while selecting learned-policy victim");
-                (
-                    *score,
-                    self.tick.saturating_sub(state.last_access_tick),
-                    self.tick.saturating_sub(state.insertion_tick),
-                )
-            })
-            .map(|(key, _)| key)
-            .or_else(|| self.fallback_victim());
 
         if self.debug {
-            eprintln!("[learned] victim={victim:?}");
+            eprintln!("[learned] victim={victim:?} source={source:?}");
         }
 
-        victim
+        Some(victim)
     }
 }
 
@@ -398,5 +523,98 @@ mod tests {
 
         assert_eq!(policy.shortlist_candidates(), vec![2, 1]);
         assert_eq!(policy.victim(), Some(2));
+    }
+
+    #[test]
+    fn full_cache_miss_records_pending_decision_snapshot() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        policy.on_miss(3);
+        let victim = policy.victim();
+
+        assert_eq!(victim, Some(2));
+        assert_eq!(policy.pending_decision_count(), 1);
+
+        let snapshot = policy
+            .pending_decisions()
+            .back()
+            .expect("expected pending decision snapshot");
+
+        assert_eq!(snapshot.decision_id, 0);
+        assert_eq!(snapshot.model_version, 0);
+        assert_eq!(snapshot.decision_tick, 4);
+        assert_eq!(snapshot.miss_key, 3);
+        assert_eq!(snapshot.chosen_victim, 2);
+        assert_eq!(snapshot.source, DecisionSource::Fallback);
+        assert_eq!(snapshot.shortlist_candidates, vec![2, 1]);
+
+        let resident_keys: Vec<CacheKey> = snapshot
+            .resident_candidates
+            .iter()
+            .map(|candidate| candidate.key)
+            .collect();
+        assert_eq!(resident_keys, vec![2, 1]);
+    }
+
+    #[test]
+    fn under_capacity_insert_does_not_record_pending_decision() {
+        let mut policy = LearnedPolicy::without_model();
+
+        policy.on_miss(10);
+        policy.insert(10);
+
+        assert_eq!(policy.pending_decision_count(), 0);
+    }
+
+    #[test]
+    fn popping_pending_decision_returns_oldest_snapshot() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+
+        policy.on_miss(3);
+        let _ = policy.victim();
+
+        let snapshot = policy
+            .pop_oldest_pending_decision()
+            .expect("expected pending decision");
+        assert_eq!(snapshot.decision_id, 0);
+        assert_eq!(policy.pending_decision_count(), 0);
+    }
+
+    #[test]
+    fn pending_decision_can_reconstruct_pair_features() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        policy.on_miss(3);
+        let _ = policy.victim();
+
+        let snapshot = policy
+            .pending_decisions()
+            .back()
+            .expect("expected pending decision snapshot");
+
+        let from_snapshot = snapshot
+            .pair_features(2, 1)
+            .expect("expected pairwise features from snapshot");
+        let from_policy = policy.pair_features(2, 1);
+
+        assert_eq!(from_snapshot, from_policy);
+        assert!(snapshot.pair_features(2, 999).is_none());
     }
 }
