@@ -11,17 +11,12 @@ from torch.utils.data import Dataset
 
 FEATURE_COLS = [
     "resident_age_diff",
-    # "resident_time_since_last_diff",
     "resident_access_count_diff",
-    # "resident_frequency_diff",
     "global_age_since_first_request_diff",
     "global_time_since_last_request_diff",
     "global_total_request_count_diff",
     "last_interarrival_diff",
     "avg_interarrival_diff",
-    # "gap_count_diff",
-    # "decay_0_diff",
-    # "decay_1_diff",
     "decay_2_diff",
 ]
 LABEL_COL = "y"
