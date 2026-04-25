@@ -13,7 +13,8 @@ use lbce::data::pairwise_csv_writer::PairwiseCsvWriter;
 use lbce::data::pairwise_samples::{
     PairwiseDatasetConfig, PairwiseDatasetGenerator, PairwiseSample,
 };
-use lbce::policies::naivelru::LruPolicy;
+use lbce::data::wiki_trace_loader;
+use lbce::policies::belady::BeladyPolicy;
 
 use lbce::workloads::bursty::BurstyWorkload;
 use lbce::workloads::looping::LoopingWorkload;
@@ -79,6 +80,7 @@ impl EvalDatasetBuilder {
 
     pub fn build_test_sets<const MM_SIZE: usize>(
         config: &EvalBuildConfig,
+        real_traces: &[NamedTrace],
     ) -> HashMap<String, Vec<PairwiseSample>> {
         println!("🧪 Building test datasets...");
         let mut rng = StdRng::seed_from_u64(config.seed);
@@ -158,17 +160,28 @@ impl EvalDatasetBuilder {
             Self::materialize_samples::<MM_SIZE>(pooled, config, &mut rng, true),
         );
 
+        for nt in real_traces {
+            let samples = Self::materialize_samples::<MM_SIZE>(
+                vec![nt.clone()],
+                config,
+                &mut rng,
+                false,
+            );
+            out.insert(format!("wiki_{}", nt.name), samples);
+        }
+
         out
     }
 
     pub fn write_test_csvs<const MM_SIZE: usize, P: AsRef<Path>>(
         config: &EvalBuildConfig,
+        real_traces: &[NamedTrace],
         output_dir: P,
     ) -> std::io::Result<()> {
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
 
-        let datasets = Self::build_test_sets::<MM_SIZE>(config);
+        let datasets = Self::build_test_sets::<MM_SIZE>(config, real_traces);
 
         for (name, samples) in datasets {
             let path = output_dir.join(format!("{name}.csv"));
@@ -202,7 +215,11 @@ impl EvalDatasetBuilder {
                     config.default_object_size,
                 );
 
-                let mut cache = Cache::new(cache_size, LruPolicy::new(cache_size), mm);
+                let mut cache = Cache::new(
+                    cache_size,
+                    BeladyPolicy::new(&named_trace.trace),
+                    mm,
+                );
 
                 let samples = PairwiseDatasetGenerator::generate(
                     &named_trace.name,
@@ -478,6 +495,24 @@ fn main() {
         },
     };
 
+    // Any extra CLI args are treated as paths to Wikipedia cache trace files.
+    let real_traces: Vec<NamedTrace> = std::env::args().skip(1).filter_map(|arg| {
+        let path = std::path::PathBuf::from(&arg);
+        let name = path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| arg.clone());
+        match wiki_trace_loader::load(&path) {
+            Ok(wt) => {
+                println!("📂 Loaded wiki trace '{}': {} requests", name, wt.trace.len());
+                Some(NamedTrace { name, trace: wt.trace })
+            }
+            Err(e) => {
+                eprintln!("⚠️  Skipping '{}': {}", arg, e);
+                None
+            }
+        }
+    }).collect();
+
     if let Err(e) = EvalDatasetBuilder::write_validation_csv::<MM_SIZE, _>(
         &config,
         "pairwise_validation_dataset.csv",
@@ -486,9 +521,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    if let Err(e) =
-        EvalDatasetBuilder::write_test_csvs::<MM_SIZE, _>(&config, "pairwise_test_datasets")
-    {
+    if let Err(e) = EvalDatasetBuilder::write_test_csvs::<MM_SIZE, _>(
+        &config,
+        &real_traces,
+        "pairwise_test_datasets",
+    ) {
         eprintln!("Failed to write test CSVs: {}", e);
         std::process::exit(1);
     }

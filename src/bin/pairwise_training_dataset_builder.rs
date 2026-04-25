@@ -13,7 +13,8 @@ use lbce::data::pairwise_csv_writer::PairwiseCsvWriter;
 use lbce::data::pairwise_samples::{
     PairwiseDatasetConfig, PairwiseDatasetGenerator, PairwiseSample,
 };
-use lbce::policies::naivelru::LruPolicy;
+use lbce::data::wiki_trace_loader;
+use lbce::policies::belady::BeladyPolicy;
 
 use lbce::workloads::bursty::BurstyWorkload;
 use lbce::workloads::looping::LoopingWorkload;
@@ -98,7 +99,11 @@ impl TrainingDatasetBuilder {
                     config.default_object_size,
                 );
 
-                let mut cache = Cache::new(cache_size, LruPolicy::new(cache_size), mm);
+                let mut cache = Cache::new(
+                    cache_size,
+                    BeladyPolicy::new(&named_trace.trace),
+                    mm,
+                );
 
                 let samples = PairwiseDatasetGenerator::generate(
                     &named_trace.name,
@@ -326,9 +331,27 @@ fn main() {
 
     let config = TrainingBuildConfig::default();
 
+    // Any extra CLI args are treated as paths to Wikipedia cache trace files.
+    let real_traces: Vec<NamedTrace> = std::env::args().skip(1).filter_map(|arg| {
+        let path = std::path::PathBuf::from(&arg);
+        let name = path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| arg.clone());
+        match wiki_trace_loader::load(&path) {
+            Ok(wt) => {
+                println!("📂 Loaded wiki trace '{}': {} requests", name, wt.trace.len());
+                Some(NamedTrace { name, trace: wt.trace })
+            }
+            Err(e) => {
+                eprintln!("⚠️  Skipping '{}': {}", arg, e);
+                None
+            }
+        }
+    }).collect();
+
     match TrainingDatasetBuilder::build_and_write_pairwise_training_csv::<MM_SIZE, _>(
         &config,
-        &[],
+        &real_traces,
         "pairwise_training_dataset.csv",
     ) {
         Ok(()) => println!("\n🎉 Done! Dataset ready."),
