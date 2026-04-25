@@ -1,2 +1,9 @@
 Cargo.lock
 target/
+cache-subsample_val.tsv
+cache-subsample.tsv
+eviction_mlp_meta.json
+eviction_mlp.pt
+eviction_mlp.meta.json
+key_distribution_linear.png
+wikipedia_subsample_training.csv
