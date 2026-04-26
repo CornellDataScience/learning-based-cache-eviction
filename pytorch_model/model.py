@@ -42,7 +42,7 @@ def train(
     if init_checkpoint != None:
         checkpoint = torch.load(init_checkpoint, map_location="cpu")
 
-        state_dict = checpoint["state_dict"]
+        state_dict = checkpoint["state_dict"]
 
         model_weights = {
             k: v for k, v in state_dict.items()

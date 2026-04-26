@@ -139,6 +139,11 @@ impl FeatureState {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PendingModelSwap {
+    path: PathBuf,
+}
+
 pub struct LearnedPolicy {
     model: Option<EvictionMLPNormalized<MyBackend>>,
     model_path: PathBuf,
@@ -156,7 +161,6 @@ pub struct LearnedPolicy {
     maturity_window: u64,
     future_access_ticks: HashMap<CacheKey, VecDeque<u64>>,
     replay_buffer: ReplayBuffer,
-    online_model: Option<EvictionMLPNormalized<MyBackend>>,
     pending_swap: Option<PendingModelSwap>,
     swap_checkpoint_interval: Option<u64>,
 }
@@ -218,7 +222,6 @@ impl LearnedPolicy {
             maturity_window: DEFAULT_MATURITY_WINDOW,
             future_access_ticks: HashMap::new(),
             replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
-            online_model: None,
             pending_swap: None,
             swap_checkpoint_interval: None,
         }
@@ -245,7 +248,6 @@ impl LearnedPolicy {
             maturity_window: DEFAULT_MATURITY_WINDOW,
             future_access_ticks: HashMap::new(),
             replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
-            online_model: None,
             pending_swap: None,
             swap_checkpoint_interval: None,
         }
@@ -330,6 +332,7 @@ impl LearnedPolicy {
             Ok(model) => {
                 self.model = Some(model);
                 self.model_path = pending.path;
+                self.model_version = self.model_version.saturating_add(1);
             }
             Err(err) => {
                 eprintln!("{err}");
@@ -514,7 +517,7 @@ impl LearnedPolicy {
             return;
         }
 
-        let data = self.replay_buffer.sample(TRAIN_SAMPLE_SIZE);
+        let data = self.replay_buffer.sample(RETRAIN_SAMPLE_SIZE);
 
         let data_path_string = "data/online_training.csv";
 
@@ -548,15 +551,7 @@ impl LearnedPolicy {
 
         match output {
             Ok(out) if out.status.success() => {
-                let device = Default::default();
-                match EvictionMLPNormalized::load(&model_path, &device) {
-                    Ok(model) => {
-                        self.online_model = Some(model);
-                    }
-                    Err(err) => {
-                        println!("failed to load trained model");
-                    }
-                }
+                self.request_model_swap(model_path);
             }
             Ok(out) => {
                 println!("training failed");
@@ -877,6 +872,9 @@ mod tests {
 
         policy.set_swap_checkpoint_interval(Some(4));
         policy.request_model_swap("definitely_missing_model_checkpoint.pt");
+
+        policy.on_hit(1);
+        assert!(policy.pending_model_swap_path().is_some());
 
         policy.on_hit(1);
         assert!(policy.pending_model_swap_path().is_some());
