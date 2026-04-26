@@ -5,12 +5,17 @@ use crate::core::policy::{CacheKey, Policy};
 use crate::deployed::{EvictionMLPNormalized, FEATURE_DIM};
 use crate::policies::label_maturation::{ReplayBuffer, mature_decision};
 
+use crate::data::pairwise_csv_writer::PairwiseCsvWriter;
+
 type MyBackend = burn_ndarray::NdArray<f32>;
 
 const DEFAULT_DECAY_FACTORS: [f32; 3] = [0.5, 0.8, 0.95];
 const DEFAULT_SHORTLIST_K: usize = 4;
 const DEFAULT_MATURITY_WINDOW: u64 = 100;
 const DEFAULT_REPLAY_BUFFER_CAPACITY: usize = 10_000;
+const RETRAIN_EVERY: u64 = 100;
+const MIN_BUFFER_SIZE: usize = 500;
+const RETRAIN_SAMPLE_SIZE: usize = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecisionSource {
@@ -151,6 +156,7 @@ pub struct LearnedPolicy {
     maturity_window: u64,
     future_access_ticks: HashMap<CacheKey, VecDeque<u64>>,
     replay_buffer: ReplayBuffer,
+    online_model: Option<EvictionMLPNormalized<MyBackend>>
 }
 
 impl LearnedPolicy {
@@ -447,6 +453,71 @@ impl LearnedPolicy {
         keys.truncate(self.shortlist_k.min(keys.len()));
         keys
     }
+
+    fn maybe_retrain(&mut self) {
+
+        if self.replay_buffer.len() < MIN_BUFFER_SIZE {
+            return;
+        }
+
+        if self.next_decision_id % RETRAIN_EVERY != 0 {
+            return;
+        }
+
+        let data = self.replay_buffer.sample(TRAIN_SAMPLE_SIZE);
+
+        let data_path_string = "data/online_training.csv";
+
+        let data_path = PathBuf::from(data_path_string);
+
+        if let Err(err) = PairwiseCsvWriter::write_to_path(
+            &data_path,
+            &data,
+            self.decay_factors.len(),
+        ) {
+            println!("failed to write training csv");
+            return;
+        }
+
+        let output = std::process::Command::new("python3")
+            .current_dir("pytorch_model")
+            .arg("model.py")
+            .arg("--train-csv")
+            .arg(data_path_string)
+            .arg("--val-csv")
+            .arg(data_path_string)
+            .arg("--epochs")
+            .arg("5")
+            .arg("--init-checkpoint")
+            .arg("eviction_mlp.pt")
+            .output();
+
+        let model_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("pytorch_model")
+            .join("eviction_mlp.pt");
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let device = Default::default();
+                match EvictionMLPNormalized::load(&model_path, &device) {
+                    Ok(model) => {
+                        self.online_model = Some(model);
+                    }
+                    Err(err) => {
+                        println!("failed to load trained model");
+                    }
+                }
+            }
+            Ok(out) => {
+                println!("training failed");
+            }
+            Err(err) => {
+                println!("training process failed to start");
+            }
+        }
+
+    }
+
 }
 
 impl Policy for LearnedPolicy {
@@ -460,12 +531,14 @@ impl Policy for LearnedPolicy {
         self.record_request(key);
         self.record_future_access(key);
         self.try_mature_pending_decisions();
+        self.maybe_retrain();
     }
 
     fn on_miss(&mut self, key: CacheKey) {
         self.tick = self.tick.saturating_add(1);
         self.pending_miss = Some(key);
         self.try_mature_pending_decisions();
+        self.maybe_retrain();
     }
 
     fn insert(&mut self, key: CacheKey) {
