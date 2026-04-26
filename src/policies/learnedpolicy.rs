@@ -1,13 +1,16 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::core::policy::{CacheKey, Policy};
 use crate::deployed::{EvictionMLPNormalized, FEATURE_DIM};
+use crate::policies::label_maturation::{ReplayBuffer, mature_decision};
 
 type MyBackend = burn_ndarray::NdArray<f32>;
 
 const DEFAULT_DECAY_FACTORS: [f32; 3] = [0.5, 0.8, 0.95];
 const DEFAULT_SHORTLIST_K: usize = 4;
+const DEFAULT_MATURITY_WINDOW: u64 = 100;
+const DEFAULT_REPLAY_BUFFER_CAPACITY: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecisionSource {
@@ -144,6 +147,10 @@ pub struct LearnedPolicy {
     model_version: u64,
     next_decision_id: u64,
     pending_decisions: VecDeque<PendingDecision>,
+    // Step 2: label maturation
+    maturity_window: u64,
+    future_access_ticks: HashMap<CacheKey, VecDeque<u64>>,
+    replay_buffer: ReplayBuffer,
 }
 
 impl LearnedPolicy {
@@ -200,6 +207,9 @@ impl LearnedPolicy {
             model_version: 0,
             next_decision_id: 0,
             pending_decisions: VecDeque::new(),
+            maturity_window: DEFAULT_MATURITY_WINDOW,
+            future_access_ticks: HashMap::new(),
+            replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
         }
     }
 
@@ -221,6 +231,9 @@ impl LearnedPolicy {
             model_version: 0,
             next_decision_id: 0,
             pending_decisions: VecDeque::new(),
+            maturity_window: DEFAULT_MATURITY_WINDOW,
+            future_access_ticks: HashMap::new(),
+            replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
         }
     }
 
@@ -250,6 +263,22 @@ impl LearnedPolicy {
 
     pub fn pop_oldest_pending_decision(&mut self) -> Option<PendingDecision> {
         self.pending_decisions.pop_front()
+    }
+
+    pub fn maturity_window(&self) -> u64 {
+        self.maturity_window
+    }
+
+    pub fn set_maturity_window(&mut self, window: u64) {
+        self.maturity_window = window;
+    }
+
+    pub fn replay_buffer(&self) -> &ReplayBuffer {
+        &self.replay_buffer
+    }
+
+    pub fn replay_buffer_mut(&mut self) -> &mut ReplayBuffer {
+        &mut self.replay_buffer
     }
 
     fn record_request(&mut self, key: CacheKey) {
@@ -373,6 +402,44 @@ impl LearnedPolicy {
         let snapshot =
             self.build_pending_decision(chosen_victim, shortlist_candidates, source, decision_id);
         self.pending_decisions.push_back(snapshot);
+
+        // Watch shortlist keys so we can record their future accesses for labeling.
+        for &key in shortlist_candidates {
+            self.future_access_ticks.entry(key).or_default();
+        }
+    }
+
+    fn record_future_access(&mut self, key: CacheKey) {
+        if let Some(ticks) = self.future_access_ticks.get_mut(&key) {
+            ticks.push_back(self.tick);
+        }
+    }
+
+    /// Drain and label all pending decisions that have waited at least
+    /// `maturity_window` ticks. Labeled examples are pushed to the replay buffer.
+    pub fn try_mature_pending_decisions(&mut self) {
+        while let Some(front) = self.pending_decisions.front() {
+            if self.tick.saturating_sub(front.decision_tick) < self.maturity_window {
+                break;
+            }
+            let decision = self.pending_decisions.pop_front().unwrap();
+            let examples = mature_decision(&decision, &self.future_access_ticks, true, true);
+            for example in examples {
+                self.replay_buffer.push(example);
+            }
+            self.prune_future_access_ticks();
+        }
+    }
+
+    /// Remove future-access tracking for keys no longer referenced by any pending decision.
+    fn prune_future_access_ticks(&mut self) {
+        let still_needed: HashSet<CacheKey> = self
+            .pending_decisions
+            .iter()
+            .flat_map(|d| d.shortlist_candidates.iter().copied())
+            .collect();
+        self.future_access_ticks
+            .retain(|k, _| still_needed.contains(k));
     }
 
     fn shortlist_candidates(&self) -> Vec<CacheKey> {
@@ -391,11 +458,14 @@ impl Policy for LearnedPolicy {
             resident.on_access(self.tick);
         }
         self.record_request(key);
+        self.record_future_access(key);
+        self.try_mature_pending_decisions();
     }
 
     fn on_miss(&mut self, key: CacheKey) {
         self.tick = self.tick.saturating_add(1);
         self.pending_miss = Some(key);
+        self.try_mature_pending_decisions();
     }
 
     fn insert(&mut self, key: CacheKey) {
@@ -616,5 +686,42 @@ mod tests {
 
         assert_eq!(from_snapshot, from_policy);
         assert!(snapshot.pair_features(2, 999).is_none());
+    }
+
+    #[test]
+    fn matured_decisions_are_labeled_into_replay_buffer() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+        policy.set_maturity_window(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        policy.on_miss(3);
+        assert_eq!(policy.victim(), Some(2));
+        assert_eq!(policy.pending_decision_count(), 1);
+        assert!(policy.replay_buffer().is_empty());
+
+        // key 1 is reused before key 2, so key 2 should be evicted first.
+        policy.on_hit(1);
+        policy.on_miss(4);
+
+        assert_eq!(policy.pending_decision_count(), 0);
+        let samples: Vec<_> = policy.replay_buffer().iter().collect();
+        assert_eq!(samples.len(), 2);
+
+        let forward = samples
+            .iter()
+            .find(|sample| sample.key0 == 2 && sample.key1 == 1)
+            .expect("expected forward pairwise sample");
+        assert_eq!(forward.y, 1);
+
+        let swapped = samples
+            .iter()
+            .find(|sample| sample.key0 == 1 && sample.key1 == 2)
+            .expect("expected swapped pairwise sample");
+        assert_eq!(swapped.y, 0);
     }
 }
