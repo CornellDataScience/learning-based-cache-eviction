@@ -156,7 +156,9 @@ pub struct LearnedPolicy {
     maturity_window: u64,
     future_access_ticks: HashMap<CacheKey, VecDeque<u64>>,
     replay_buffer: ReplayBuffer,
-    online_model: Option<EvictionMLPNormalized<MyBackend>>
+    online_model: Option<EvictionMLPNormalized<MyBackend>>,
+    pending_swap: Option<PendingModelSwap>,
+    swap_checkpoint_interval: Option<u64>,
 }
 
 impl LearnedPolicy {
@@ -216,6 +218,9 @@ impl LearnedPolicy {
             maturity_window: DEFAULT_MATURITY_WINDOW,
             future_access_ticks: HashMap::new(),
             replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
+            online_model: None,
+            pending_swap: None,
+            swap_checkpoint_interval: None,
         }
     }
 
@@ -240,6 +245,9 @@ impl LearnedPolicy {
             maturity_window: DEFAULT_MATURITY_WINDOW,
             future_access_ticks: HashMap::new(),
             replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
+            online_model: None,
+            pending_swap: None,
+            swap_checkpoint_interval: None,
         }
     }
 
@@ -285,6 +293,48 @@ impl LearnedPolicy {
 
     pub fn replay_buffer_mut(&mut self) -> &mut ReplayBuffer {
         &mut self.replay_buffer
+    }
+
+    pub fn request_model_swap(&mut self, path: impl AsRef<Path>) {
+        self.pending_swap = Some(PendingModelSwap {
+            path: path.as_ref().to_path_buf(),
+        });
+    }
+
+    pub fn set_swap_checkpoint_interval(&mut self, interval: Option<u64>) {
+        self.swap_checkpoint_interval = interval.map(|value| value.max(1));
+    }
+
+    pub fn pending_model_swap_path(&self) -> Option<&Path> {
+        self.pending_swap.as_ref().map(|swap| swap.path.as_path())
+    }
+
+    fn should_apply_swap_now(&self) -> bool {
+        match self.swap_checkpoint_interval {
+            Some(interval) => self.tick % interval == 0,
+            None => true,
+        }
+    }
+
+    fn apply_pending_swap_if_ready(&mut self) {
+        if self.pending_swap.is_none() || !self.should_apply_swap_now() {
+            return;
+        }
+
+        let pending = self
+            .pending_swap
+            .take()
+            .expect("pending model swap must exist when applying");
+        let device = Default::default();
+        match EvictionMLPNormalized::<MyBackend>::load(&pending.path, &device) {
+            Ok(model) => {
+                self.model = Some(model);
+                self.model_path = pending.path;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+            }
+        }
     }
 
     fn record_request(&mut self, key: CacheKey) {
@@ -532,6 +582,7 @@ impl Policy for LearnedPolicy {
         self.record_future_access(key);
         self.try_mature_pending_decisions();
         self.maybe_retrain();
+        self.apply_pending_swap_if_ready();
     }
 
     fn on_miss(&mut self, key: CacheKey) {
@@ -548,6 +599,8 @@ impl Policy for LearnedPolicy {
         if self.pending_miss == Some(key) {
             self.pending_miss = None;
         }
+
+        self.apply_pending_swap_if_ready();
     }
 
     fn remove(&mut self, key: CacheKey) {
@@ -796,5 +849,39 @@ mod tests {
             .find(|sample| sample.key0 == 1 && sample.key1 == 2)
             .expect("expected swapped pairwise sample");
         assert_eq!(swapped.y, 0);
+    }
+
+    #[test]
+    fn model_swap_is_not_applied_during_victim_decision() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+
+        policy.set_swap_checkpoint_interval(Some(100));
+        policy.request_model_swap("eviction_mlp.pt");
+
+        assert!(policy.pending_model_swap_path().is_some());
+        let _ = policy.victim();
+        assert!(policy.pending_model_swap_path().is_some());
+    }
+
+    #[test]
+    fn model_swap_applies_only_on_checkpoint_boundaries() {
+        let mut policy = LearnedPolicy::without_model();
+
+        policy.on_miss(1);
+        policy.insert(1);
+
+        policy.set_swap_checkpoint_interval(Some(4));
+        policy.request_model_swap("definitely_missing_model_checkpoint.pt");
+
+        policy.on_hit(1);
+        assert!(policy.pending_model_swap_path().is_some());
+
+        policy.on_hit(1);
+        assert!(policy.pending_model_swap_path().is_none());
     }
 }
