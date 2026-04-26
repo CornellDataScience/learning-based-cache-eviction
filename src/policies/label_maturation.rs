@@ -7,6 +7,9 @@ use crate::data::pairwise_samples::{
 };
 use crate::policies::learnedpolicy::PendingDecision;
 
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
 pub struct ReplayBuffer {
     buffer: VecDeque<PairwiseSample>,
     capacity: usize,
@@ -46,6 +49,33 @@ impl ReplayBuffer {
     pub fn drain_all(&mut self) -> Vec<PairwiseSample> {
         self.buffer.drain(..).collect()
     }
+
+    pub fn sample(&self, n: usize) -> Vec<PairwiseSample> {
+        let mut rng = thread_rng();
+
+        if self.buffer.len() <= n {
+            let mut samples = Vec::with_capacity(self.buffer.len());
+
+            for item in self.buffer.iter() {
+                samples.push(item.clone());
+            }
+
+            return samples;
+        }
+
+        let mut indices: Vec<usize> = (0..self.buffer.len()).collect();
+        indices.shuffle(&mut rng);
+
+        let mut samples = Vec::with_capacity(n);
+        
+        for i in indices.into_iter().take(n) {
+                samples.push(self.buffer[i].clone());
+        }
+        
+        samples
+
+    }
+
 }
 
 /// Convert a matured `PendingDecision` into pairwise training examples.

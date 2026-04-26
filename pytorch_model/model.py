@@ -22,6 +22,7 @@ def train(
     epochs: int = 20,
     batch_size: int = 64,
     lr: float = 3e-4,
+    init_checkpoint: str | None = None
 ):
     train_set = PairwiseDataset(train_csv, transform="log1p", norm="zscore")
     val_set = PairwiseDataset(
@@ -37,6 +38,19 @@ def train(
     val_loader = DataLoader(val_set, batch_size=batch_size)
 
     model = EvictionMLP(input_dim=len(FEATURE_COLS), dropout=0.0, activation="relu")
+
+    if init_checkpoint != None:
+        checkpoint = torch.load(init_checkpoint, map_location="cpu")
+
+        state_dict = checpoint["state_dict"]
+
+        model_weights = {
+            k: v for k, v in state_dict.items()
+            if not k.startswith("norm.")
+        }
+
+        model.load_state_dict(model_weights, strict=False)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.BCEWithLogitsLoss()
 
@@ -78,6 +92,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--output", default=str(default_checkpoint_path()))
+    parser.add_argument("--init-checkpoint", default=None)
     args = parser.parse_args()
 
     model, mean, std = train(
@@ -86,6 +101,7 @@ if __name__ == "__main__":
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        init_checkpoint=args.init_checkpoint,
     )
     state_dict = model.state_dict()
     state_dict["norm.mean"] = torch.tensor(mean, dtype=torch.float32)
