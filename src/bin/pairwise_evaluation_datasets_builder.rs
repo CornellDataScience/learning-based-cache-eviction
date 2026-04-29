@@ -58,23 +58,65 @@ pub struct NamedTrace {
 pub struct EvalDatasetBuilder;
 
 impl EvalDatasetBuilder {
+    const SYNTHETIC_TARGET_SHARE: f32 = 0.35;
+    const MIXED_TARGET_SHARE: f32 = 0.45;
+    const REAL_TARGET_SHARE: f32 = 0.20;
+
     pub fn build_validation_dataset<const MM_SIZE: usize>(
         config: &EvalBuildConfig,
+        real_traces: &[NamedTrace],
     ) -> Vec<PairwiseSample> {
         println!("🧪 Building validation dataset...");
         let mut rng = StdRng::seed_from_u64(config.seed);
 
-        let traces = Self::build_validation_trace_suite(config, &mut rng);
-        println!("   Validation traces: {}", traces.len());
+        let (synthetic_traces, mixed_traces) = Self::build_validation_trace_groups(config, &mut rng);
+        println!(
+            "   Validation trace groups: synthetic={} mixed={} real={}",
+            synthetic_traces.len(),
+            mixed_traces.len(),
+            real_traces.len()
+        );
 
-        Self::materialize_samples::<MM_SIZE>(traces, config, &mut rng, true)
+        let synthetic_samples = Self::materialize_samples::<MM_SIZE>(
+            synthetic_traces,
+            config,
+            &mut rng,
+            false,
+        );
+        let mixed_samples = Self::materialize_samples::<MM_SIZE>(
+            mixed_traces,
+            config,
+            &mut rng,
+            false,
+        );
+        let real_samples = Self::materialize_samples::<MM_SIZE>(
+            real_traces.to_vec(),
+            config,
+            &mut rng,
+            false,
+        );
+
+        Self::rebalance_groups(
+            vec![
+                (
+                    "synthetic",
+                    synthetic_samples,
+                    Self::SYNTHETIC_TARGET_SHARE,
+                ),
+                ("mixed", mixed_samples, Self::MIXED_TARGET_SHARE),
+                ("real", real_samples, Self::REAL_TARGET_SHARE),
+            ],
+            config.max_samples_total,
+            &mut rng,
+        )
     }
 
     pub fn write_validation_csv<const MM_SIZE: usize, P: AsRef<Path>>(
         config: &EvalBuildConfig,
+        real_traces: &[NamedTrace],
         output_path: P,
     ) -> std::io::Result<()> {
-        let samples = Self::build_validation_dataset::<MM_SIZE>(config);
+        let samples = Self::build_validation_dataset::<MM_SIZE>(config, real_traces);
         PairwiseCsvWriter::write_to_path(output_path, &samples, config.pairwise.decay_factors.len())
     }
 
@@ -145,19 +187,47 @@ impl EvalDatasetBuilder {
             ),
         );
 
-        let pooled = [
-            bursty,
-            looping,
-            phase,
-            zipf,
-            mixed_concat,
-            mixed_interleaved,
-        ]
-        .concat();
+        let pooled_synthetic = [bursty, looping, phase, zipf].concat();
+        let pooled_mixed = [mixed_concat, mixed_interleaved].concat();
 
         out.insert(
             "test_pooled".to_string(),
-            Self::materialize_samples::<MM_SIZE>(pooled, config, &mut rng, true),
+            Self::rebalance_groups(
+                vec![
+                    (
+                        "synthetic",
+                        Self::materialize_samples::<MM_SIZE>(
+                            pooled_synthetic,
+                            config,
+                            &mut rng,
+                            false,
+                        ),
+                        Self::SYNTHETIC_TARGET_SHARE,
+                    ),
+                    (
+                        "mixed",
+                        Self::materialize_samples::<MM_SIZE>(
+                            pooled_mixed,
+                            config,
+                            &mut rng,
+                            false,
+                        ),
+                        Self::MIXED_TARGET_SHARE,
+                    ),
+                    (
+                        "real",
+                        Self::materialize_samples::<MM_SIZE>(
+                            real_traces.to_vec(),
+                            config,
+                            &mut rng,
+                            false,
+                        ),
+                        Self::REAL_TARGET_SHARE,
+                    ),
+                ],
+                config.max_samples_total,
+                &mut rng,
+            ),
         );
 
         for nt in real_traces {
@@ -168,6 +238,18 @@ impl EvalDatasetBuilder {
                 false,
             );
             out.insert(format!("wiki_{}", nt.name), samples);
+        }
+
+        if !real_traces.is_empty() {
+            out.insert(
+                "test_real_only".to_string(),
+                Self::materialize_samples::<MM_SIZE>(
+                    real_traces.to_vec(),
+                    config,
+                    &mut rng,
+                    true,
+                ),
+            );
         }
 
         out
@@ -254,17 +336,19 @@ impl EvalDatasetBuilder {
         all_samples
     }
 
-    fn build_validation_trace_suite(config: &EvalBuildConfig, rng: &mut StdRng) -> Vec<NamedTrace> {
-        let mut traces = Vec::new();
-        traces.extend(Self::make_validation_bursty_traces());
-        traces.extend(Self::make_validation_looping_traces());
-        traces.extend(Self::make_validation_phase_traces());
-        traces.extend(Self::make_validation_zipf_traces(config.seed));
+    fn build_validation_trace_groups(
+        config: &EvalBuildConfig,
+        rng: &mut StdRng,
+    ) -> (Vec<NamedTrace>, Vec<NamedTrace>) {
+        let mut synthetic = Vec::new();
+        synthetic.extend(Self::make_validation_bursty_traces());
+        synthetic.extend(Self::make_validation_looping_traces());
+        synthetic.extend(Self::make_validation_phase_traces());
+        synthetic.extend(Self::make_validation_zipf_traces(config.seed));
 
-        let mixed = Self::make_validation_mixed_traces(&traces, rng);
-        traces.extend(mixed);
+        let mixed = Self::make_validation_mixed_traces(&synthetic, rng);
 
-        traces
+        (synthetic, mixed)
     }
 
     fn make_validation_bursty_traces() -> Vec<NamedTrace> {
@@ -476,6 +560,118 @@ impl EvalDatasetBuilder {
 
         kept
     }
+
+    fn rebalance_groups(
+        groups: Vec<(&'static str, Vec<PairwiseSample>, f32)>,
+        max_samples_total: usize,
+        rng: &mut StdRng,
+    ) -> Vec<PairwiseSample> {
+        let mut active: Vec<(&'static str, Vec<PairwiseSample>, f32)> = groups
+            .into_iter()
+            .filter(|(_, samples, _)| !samples.is_empty())
+            .collect();
+
+        if active.is_empty() {
+            return Vec::new();
+        }
+
+        for (_, samples, _) in &mut active {
+            samples.shuffle(rng);
+        }
+
+        let available_total: usize = active.iter().map(|(_, samples, _)| samples.len()).sum();
+        let target_total = available_total.min(max_samples_total);
+        let total_weight: f32 = active.iter().map(|(_, _, weight)| *weight).sum();
+
+        let mut selected_counts = vec![0usize; active.len()];
+        let mut selected_total = 0usize;
+
+        for (idx, (_, samples, weight)) in active.iter().enumerate() {
+            let normalized = if total_weight > 0.0 {
+                *weight / total_weight
+            } else {
+                1.0 / active.len() as f32
+            };
+            let desired = ((target_total as f32) * normalized).round() as usize;
+            let count = desired.min(samples.len());
+            selected_counts[idx] = count;
+            selected_total += count;
+        }
+
+        while selected_total > target_total {
+            if let Some((idx, _)) = selected_counts
+                .iter()
+                .enumerate()
+                .filter(|(_, count)| **count > 0)
+                .max_by_key(|(_, count)| **count)
+            {
+                selected_counts[idx] -= 1;
+                selected_total -= 1;
+            } else {
+                break;
+            }
+        }
+
+        while selected_total < target_total {
+            let mut progressed = false;
+
+            for idx in 0..active.len() {
+                if selected_total >= target_total {
+                    break;
+                }
+
+                if selected_counts[idx] < active[idx].1.len() {
+                    selected_counts[idx] += 1;
+                    selected_total += 1;
+                    progressed = true;
+                }
+            }
+
+            if !progressed {
+                break;
+            }
+        }
+
+        let mut balanced = Vec::with_capacity(selected_total);
+
+        for ((label, mut samples, _), count) in active.into_iter().zip(selected_counts.into_iter()) {
+            println!("   🎯 keeping {} {} samples", count, label);
+            samples.truncate(count);
+            balanced.extend(samples);
+        }
+
+        balanced.shuffle(rng);
+        println!("   ✅ Final balanced dataset size: {}", balanced.len());
+        balanced
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RealTraceSplit {
+    Validation,
+    Test,
+}
+
+fn load_named_trace(arg: &str) -> Option<NamedTrace> {
+    let path = std::path::PathBuf::from(arg);
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| arg.to_string());
+
+    match wiki_trace_loader::load(&path) {
+        Ok(wt) => {
+            println!("📂 Loaded wiki trace '{}': {} requests", name, wt.trace.len());
+            Some(NamedTrace {
+                name,
+                trace: wt.trace,
+            })
+        }
+        Err(e) => {
+            eprintln!("⚠️  Skipping '{}': {}", arg, e);
+            None
+        }
+    }
 }
 
 fn main() {
@@ -495,26 +691,29 @@ fn main() {
         },
     };
 
-    // Any extra CLI args are treated as paths to Wikipedia cache trace files.
-    let real_traces: Vec<NamedTrace> = std::env::args().skip(1).filter_map(|arg| {
-        let path = std::path::PathBuf::from(&arg);
-        let name = path.file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| arg.clone());
-        match wiki_trace_loader::load(&path) {
-            Ok(wt) => {
-                println!("📂 Loaded wiki trace '{}': {} requests", name, wt.trace.len());
-                Some(NamedTrace { name, trace: wt.trace })
-            }
-            Err(e) => {
-                eprintln!("⚠️  Skipping '{}': {}", arg, e);
-                None
+    let mut validation_real_traces = Vec::new();
+    let mut test_real_traces = Vec::new();
+
+    for arg in std::env::args().skip(1) {
+        let (split, path) = if let Some(path) = arg.strip_prefix("val:") {
+            (RealTraceSplit::Validation, path)
+        } else if let Some(path) = arg.strip_prefix("test:") {
+            (RealTraceSplit::Test, path)
+        } else {
+            (RealTraceSplit::Test, arg.as_str())
+        };
+
+        if let Some(named_trace) = load_named_trace(path) {
+            match split {
+                RealTraceSplit::Validation => validation_real_traces.push(named_trace),
+                RealTraceSplit::Test => test_real_traces.push(named_trace),
             }
         }
-    }).collect();
+    }
 
     if let Err(e) = EvalDatasetBuilder::write_validation_csv::<MM_SIZE, _>(
         &config,
+        &validation_real_traces,
         "pairwise_validation_dataset.csv",
     ) {
         eprintln!("Failed to write validation CSV: {}", e);
@@ -523,7 +722,7 @@ fn main() {
 
     if let Err(e) = EvalDatasetBuilder::write_test_csvs::<MM_SIZE, _>(
         &config,
-        &real_traces,
+        &test_real_traces,
         "pairwise_test_datasets",
     ) {
         eprintln!("Failed to write test CSVs: {}", e);

@@ -7,3 +7,5 @@ eviction_mlp.pt
 eviction_mlp.meta.json
 key_distribution_linear.png
 wikipedia_subsample_training.csv
+venv/
+pytorch_model/__pycache__/
