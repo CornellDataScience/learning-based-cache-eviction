@@ -24,6 +24,17 @@ pub struct PairwiseSample {
     pub y: u8,
 }
 
+pub const PAIRWISE_FEATURE_NAMES: [&str; 8] = [
+    "resident_age_diff",
+    "resident_access_count_diff",
+    "global_age_since_first_request_diff",
+    "global_time_since_last_request_diff",
+    "global_total_request_count_diff",
+    "last_interarrival_diff",
+    "avg_interarrival_diff",
+    "decay_2_diff",
+];
+
 /// Config for pairwise dataset generation.
 #[derive(Clone, Debug)]
 pub struct PairwiseDatasetConfig {
@@ -264,31 +275,21 @@ impl PairwiseDatasetGenerator {
 
     /// Feature order:
     ///  0. resident age since insertion
-    ///  1. resident time since last access
-    ///  2. resident access_count
-    ///  3. resident frequency
-    ///  4. global age since first-ever request
-    ///  5. global time since last request
-    ///  6. global total request count
-    ///  7. last interarrival
-    ///  8. avg interarrival
-    ///  9. gap count
-    /// 10.. decayed frequency counters
+    ///  1. resident access_count
+    ///  2. global age since first-ever request
+    ///  3. global time since last request
+    ///  4. global total request count
+    ///  5. last interarrival
+    ///  6. avg interarrival
+    ///  7. selected decayed frequency counter (alpha = decay_factors[2])
     fn extract_features(
         entry: &Entry<CacheKey>,
         history: Option<&FeatureState>,
         decision_tick: u64,
-        decay_dims: usize,
+        _decay_dims: usize,
     ) -> Vec<f32> {
         let resident_age = decision_tick.saturating_sub(entry.insertion_tick) as f32;
-        let resident_time_since_last = decision_tick.saturating_sub(entry.last_access_tick) as f32;
-
-        let mut v = vec![
-            resident_age,
-            resident_time_since_last,
-            entry.access_count as f32,
-            entry.frequency(decision_tick) as f32,
-        ];
+        let mut v = vec![resident_age, entry.access_count as f32];
 
         if let Some(h) = history {
             v.push(decision_tick.saturating_sub(h.first_request_tick) as f32);
@@ -296,11 +297,9 @@ impl PairwiseDatasetGenerator {
             v.push(h.total_request_count as f32);
             v.push(h.last_interarrival);
             v.push(h.avg_interarrival);
-            v.push(h.gap_count as f32);
-            v.extend(h.decay_counters.iter().copied());
+            v.push(h.decay_counters.get(2).copied().unwrap_or(0.0));
         } else {
-            v.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-            v.extend(std::iter::repeat(0.0).take(decay_dims));
+            v.extend(std::iter::repeat_n(0.0, PAIRWISE_FEATURE_NAMES.len() - 2));
         }
 
         v
