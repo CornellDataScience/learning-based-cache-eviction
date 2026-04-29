@@ -150,6 +150,7 @@ pub struct LearnedPolicy {
     model_path: PathBuf,
     shortlist_k: usize,
     debug: bool,
+    online_learning_enabled: bool,
     tick: u64,
     pending_miss: Option<CacheKey>,
     residents: HashMap<CacheKey, ResidentState>,
@@ -213,6 +214,7 @@ impl LearnedPolicy {
             model_path: path_buf,
             shortlist_k: shortlist_k.max(1),
             debug,
+            online_learning_enabled: true,
             tick: 0,
             pending_miss: None,
             residents: HashMap::new(),
@@ -240,6 +242,7 @@ impl LearnedPolicy {
             model_path: PathBuf::from("eviction_mlp.pt"),
             shortlist_k: shortlist_k.max(1),
             debug: false,
+            online_learning_enabled: true,
             tick: 0,
             pending_miss: None,
             residents: HashMap::new(),
@@ -267,6 +270,10 @@ impl LearnedPolicy {
 
     pub fn debug_enabled(&self) -> bool {
         self.debug
+    }
+
+    pub fn set_online_learning_enabled(&mut self, enabled: bool) {
+        self.online_learning_enabled = enabled;
     }
 
     pub fn model_version(&self) -> u64 {
@@ -323,6 +330,11 @@ impl LearnedPolicy {
     }
 
     fn apply_pending_swap_if_ready(&mut self) {
+        if !self.online_learning_enabled {
+            self.pending_swap = None;
+            return;
+        }
+
         if self.pending_swap.is_none() || !self.should_apply_swap_now() {
             return;
         }
@@ -514,6 +526,10 @@ impl LearnedPolicy {
     }
 
     fn maybe_retrain(&mut self) {
+        if !self.online_learning_enabled {
+            return;
+        }
+
         if self.replay_buffer.len() < MIN_BUFFER_SIZE {
             return;
         }

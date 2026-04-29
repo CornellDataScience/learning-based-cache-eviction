@@ -30,9 +30,9 @@ const DEFAULT_SHORTLIST_K: usize = 4;
 const DEFAULT_ZIPF_SKEW: f64 = 1.2;
 const DEFAULT_ZIPF_SEED: u64 = 7;
 const DEFAULT_BURSTY_CYCLES: usize = 50;
-const DEFAULT_BURSTY_QUIET: usize = 32;
+const DEFAULT_BURSTY_QUIET: usize = 100;
 const DEFAULT_BURSTY_BURST: usize = 16;
-const DEFAULT_BACKGROUND_KEYS: usize = 32;
+const DEFAULT_BACKGROUND_KEYS: usize = 100;
 const DEFAULT_PHASES: usize = 4;
 const DEFAULT_KEYS_PER_PHASE: usize = 32;
 const DEFAULT_TRACE_PATH: &str = "";
@@ -60,6 +60,7 @@ struct RunnerConfig {
     verbose: bool,
     show_events: Option<usize>,
     debug_learned: bool,
+    online_learning_enabled: bool,
 }
 
 impl Default for RunnerConfig {
@@ -85,6 +86,7 @@ impl Default for RunnerConfig {
             verbose: false,
             show_events: None,
             debug_learned: false,
+            online_learning_enabled: true,
         }
     }
 }
@@ -128,6 +130,7 @@ impl RunnerConfig {
                     config.show_events = Some(next_parse(&mut args, "--show-events")?)
                 }
                 "--debug-learned" => config.debug_learned = true,
+                "--disable-online-learning" => config.online_learning_enabled = false,
                 "--help" | "-h" => {
                     print_usage();
                     process::exit(0);
@@ -426,6 +429,7 @@ Learned-policy options:
   --model <path>            Model checkpoint path. Default: eviction_mlp.pt
   --shortlist-k <n>         LRU shortlist size before pairwise voting. Default: 4
   --debug-learned           Print shortlist and pairwise vote details
+  --disable-online-learning Disable online retraining and model swapping
 
 Zipf options:
   --zipf-skew <f64>         Zipf skew parameter. Default: 1.2
@@ -462,16 +466,16 @@ fn main() {
     let result = match config.policy.as_str() {
         "fifo" => run_with_policy(&config, &trace, FifoPolicy::new(config.cache_capacity)),
         "lru" => run_with_policy(&config, &trace, LruPolicy::new(config.cache_capacity)),
-        "learned" => run_with_policy(
-            &config,
-            &trace,
-            LearnedPolicy::with_config_and_debug(
+        "learned" => {
+            let mut policy = LearnedPolicy::with_config_and_debug(
                 &config.model_path,
                 DEFAULT_DECAY_FACTORS.to_vec(),
                 config.shortlist_k,
                 config.debug_learned,
-            ),
-        ),
+            );
+            policy.set_online_learning_enabled(config.online_learning_enabled);
+            run_with_policy(&config, &trace, policy)
+        }
         "optimal" => run_optimal_policy(&config, &trace),
         other => {
             eprintln!("unsupported policy after validation: {other}");
@@ -492,6 +496,10 @@ fn main() {
         println!("model={}", config.model_path);
         println!("shortlist_k={}", config.shortlist_k);
         println!("debug_learned={}", config.debug_learned);
+        println!(
+            "online_learning_enabled={}",
+            config.online_learning_enabled
+        );
     }
     println!("verbose={}", config.verbose);
     println!("show_events={:?}", config.show_events);
