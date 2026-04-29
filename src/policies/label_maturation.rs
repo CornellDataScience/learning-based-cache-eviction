@@ -67,15 +67,13 @@ impl ReplayBuffer {
         indices.shuffle(&mut rng);
 
         let mut samples = Vec::with_capacity(n);
-        
+
         for i in indices.into_iter().take(n) {
-                samples.push(self.buffer[i].clone());
+            samples.push(self.buffer[i].clone());
         }
-        
+
         samples
-
     }
-
 }
 
 /// Convert a matured `PendingDecision` into pairwise training examples.
