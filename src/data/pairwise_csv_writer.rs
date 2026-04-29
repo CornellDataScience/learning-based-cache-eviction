@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use crate::data::pairwise_samples::PairwiseSample;
+use crate::data::pairwise_samples::{PAIRWISE_FEATURE_NAMES, PairwiseSample};
 
 pub struct PairwiseCsvWriter;
 
@@ -10,12 +10,12 @@ impl PairwiseCsvWriter {
     pub fn write_to_path<P: AsRef<Path>>(
         path: P,
         samples: &[PairwiseSample],
-        decay_dims: usize,
+        _decay_dims: usize,
     ) -> std::io::Result<()> {
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
 
-        Self::write_to_writer(&mut writer, samples, decay_dims)?;
+        Self::write_to_writer(&mut writer, samples, 0)?;
         writer.flush()?;
         Ok(())
     }
@@ -23,32 +23,16 @@ impl PairwiseCsvWriter {
     pub fn write_to_writer<W: Write>(
         writer: &mut W,
         samples: &[PairwiseSample],
-        decay_dims: usize,
+        _decay_dims: usize,
     ) -> std::io::Result<()> {
-        let expected_dim = 10 + decay_dims;
-
-        let base_feature_names = [
-            "resident_age_diff",
-            "resident_time_since_last_diff",
-            "resident_access_count_diff",
-            "resident_frequency_diff",
-            "global_age_since_first_request_diff",
-            "global_time_since_last_request_diff",
-            "global_total_request_count_diff",
-            "last_interarrival_diff",
-            "avg_interarrival_diff",
-            "gap_count_diff",
-        ];
+        let expected_dim = PAIRWISE_FEATURE_NAMES.len();
 
         write!(
             writer,
             "trace_name,cache_size,request_index,tick,key0,key1,y"
         )?;
-        for name in base_feature_names {
+        for name in PAIRWISE_FEATURE_NAMES {
             write!(writer, ",{}", name)?;
-        }
-        for i in 0..decay_dims {
-            write!(writer, ",decay_{}_diff", i)?;
         }
         writeln!(writer)?;
 
