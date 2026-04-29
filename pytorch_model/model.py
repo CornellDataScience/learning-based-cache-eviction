@@ -1,5 +1,6 @@
 import argparse
 import json
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -17,12 +18,12 @@ from common import (
 
 
 def train(
+    init_checkpoint: Optional[str],
     train_csv: str,
     val_csv: str,
     epochs: int = 20,
     batch_size: int = 64,
     lr: float = 3e-4,
-    init_checkpoint: str | None = None
 ):
     train_set = PairwiseDataset(train_csv, transform="log1p", norm="zscore")
     val_set = PairwiseDataset(
@@ -96,12 +97,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model, mean, std = train(
-        args.train_csv,
-        args.val_csv,
+        init_checkpoint=args.init_checkpoint,
+        train_csv=args.train_csv,
+        val_csv=args.val_csv,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
-        init_checkpoint=args.init_checkpoint,
     )
     state_dict = model.state_dict()
     state_dict["norm.mean"] = torch.tensor(mean, dtype=torch.float32)

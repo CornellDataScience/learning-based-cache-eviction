@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::core::policy::{CacheKey, Policy};
@@ -163,6 +164,7 @@ pub struct LearnedPolicy {
     replay_buffer: ReplayBuffer,
     pending_swap: Option<PendingModelSwap>,
     swap_checkpoint_interval: Option<u64>,
+    last_retrain_trigger_decision_id: Option<u64>,
 }
 
 impl LearnedPolicy {
@@ -224,6 +226,7 @@ impl LearnedPolicy {
             replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
             pending_swap: None,
             swap_checkpoint_interval: None,
+            last_retrain_trigger_decision_id: None,
         }
     }
 
@@ -250,6 +253,7 @@ impl LearnedPolicy {
             replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
             pending_swap: None,
             swap_checkpoint_interval: None,
+            last_retrain_trigger_decision_id: None,
         }
     }
 
@@ -330,12 +334,19 @@ impl LearnedPolicy {
         let device = Default::default();
         match EvictionMLPNormalized::<MyBackend>::load(&pending.path, &device) {
             Ok(model) => {
+                let previous_version = self.model_version;
                 self.model = Some(model);
                 self.model_path = pending.path;
                 self.model_version = self.model_version.saturating_add(1);
+                eprintln!(
+                    "[online-learning] applied model swap version {} -> {} path={}",
+                    previous_version,
+                    self.model_version,
+                    self.model_path.display()
+                );
             }
             Err(err) => {
-                eprintln!("{err}");
+                eprintln!("[online-learning] model swap failed: {err}");
             }
         }
     }
@@ -508,61 +519,89 @@ impl LearnedPolicy {
     }
 
     fn maybe_retrain(&mut self) {
-
         if self.replay_buffer.len() < MIN_BUFFER_SIZE {
             return;
         }
 
-        if self.next_decision_id % RETRAIN_EVERY != 0 {
+        if self.next_decision_id == 0 || self.next_decision_id % RETRAIN_EVERY != 0 {
+            return;
+        }
+
+        if self.last_retrain_trigger_decision_id == Some(self.next_decision_id) {
             return;
         }
 
         let data = self.replay_buffer.sample(RETRAIN_SAMPLE_SIZE);
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let online_training_dir = repo_root.join("target").join("online_learning");
+        let model_path = repo_root.join("eviction_mlp.pt");
+        let data_path = online_training_dir.join("online_training.csv");
+        let train_script = repo_root.join("pytorch_model").join("model.py");
 
-        let data_path_string = "data/online_training.csv";
-
-        let data_path = PathBuf::from(data_path_string);
-
-        if let Err(err) = PairwiseCsvWriter::write_to_path(
-            &data_path,
-            &data,
-            self.decay_factors.len(),
-        ) {
-            println!("failed to write training csv");
+        if let Err(err) = fs::create_dir_all(&online_training_dir) {
+            eprintln!(
+                "[online-learning] failed to create online training directory {}: {err}",
+                online_training_dir.display()
+            );
             return;
         }
 
+        if let Err(err) =
+            PairwiseCsvWriter::write_to_path(&data_path, &data, self.decay_factors.len())
+        {
+            eprintln!(
+                "[online-learning] failed to write online training csv {}: {err}",
+                data_path.display()
+            );
+            return;
+        }
+
+        self.last_retrain_trigger_decision_id = Some(self.next_decision_id);
+        eprintln!(
+            "[online-learning] retrain triggered decisions={} replay_buffer={} sample_size={} csv={}",
+            self.next_decision_id,
+            self.replay_buffer.len(),
+            data.len(),
+            data_path.display()
+        );
+
         let output = std::process::Command::new("python3")
-            .current_dir("pytorch_model")
-            .arg("model.py")
+            .current_dir(&repo_root)
+            .arg(&train_script)
             .arg("--train-csv")
-            .arg(data_path_string)
+            .arg(&data_path)
             .arg("--val-csv")
-            .arg(data_path_string)
+            .arg(&data_path)
             .arg("--epochs")
             .arg("5")
+            .arg("--output")
+            .arg(&model_path)
             .arg("--init-checkpoint")
-            .arg("eviction_mlp.pt")
+            .arg(&model_path)
             .output();
-
-        let model_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("pytorch_model")
-            .join("eviction_mlp.pt");
 
         match output {
             Ok(out) if out.status.success() => {
+                eprintln!(
+                    "[online-learning] retrain succeeded status={} output_model={}",
+                    out.status,
+                    model_path.display()
+                );
                 self.request_model_swap(model_path);
             }
             Ok(out) => {
-                println!("training failed");
+                eprintln!(
+                    "[online-learning] retrain failed status={} stdout=\n{}\nstderr=\n{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
             Err(err) => {
-                println!("training process failed to start");
+                eprintln!("[online-learning] retraining process failed to start: {err}");
             }
         }
-
     }
-
 }
 
 impl Policy for LearnedPolicy {
@@ -583,6 +622,7 @@ impl Policy for LearnedPolicy {
     fn on_miss(&mut self, key: CacheKey) {
         self.tick = self.tick.saturating_add(1);
         self.pending_miss = Some(key);
+        self.record_future_access(key);
         self.try_mature_pending_decisions();
         self.maybe_retrain();
     }
