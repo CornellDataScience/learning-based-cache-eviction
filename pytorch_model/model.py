@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -11,7 +12,6 @@ from common import (
     PairwiseDataset,
     EvictionMLP,
     default_checkpoint_path,
-    default_metadata_path,
     default_train_csv,
     default_val_csv,
 )
@@ -108,7 +108,8 @@ if __name__ == "__main__":
     state_dict["norm.mean"] = torch.tensor(mean, dtype=torch.float32)
     state_dict["norm.std"] = torch.tensor(std, dtype=torch.float32)
     torch.save({"state_dict": state_dict}, args.output)
-    metadata_path = default_metadata_path()
+    output_path = Path(args.output)
+    metadata_path = output_path.with_name(f"{output_path.stem}.meta.json")
     metadata_path.write_text(
         json.dumps(
             {

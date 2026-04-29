@@ -529,7 +529,8 @@ impl LearnedPolicy {
         let data = self.replay_buffer.sample(RETRAIN_SAMPLE_SIZE);
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let online_training_dir = repo_root.join("target").join("online_learning");
-        let model_path = repo_root.join("eviction_mlp.pt");
+        let offline_model_path = repo_root.join("eviction_mlp.pt");
+        let model_path = online_training_dir.join("eviction_mlp_online.pt");
         let data_path = online_training_dir.join("online_training.csv");
         let train_script = repo_root.join("pytorch_model").join("model.py");
 
@@ -572,15 +573,20 @@ impl LearnedPolicy {
             .arg("--output")
             .arg(&model_path)
             .arg("--init-checkpoint")
-            .arg(&model_path)
+            .arg(&self.model_path)
             .output();
 
         match output {
             Ok(out) if out.status.success() => {
                 eprintln!(
-                    "[online-learning] retrain succeeded status={} output_model={}",
+                    "[online-learning] retrain succeeded status={} output_model={} base_model={}",
                     out.status,
-                    model_path.display()
+                    model_path.display(),
+                    if self.model_version == 0 {
+                        offline_model_path.display().to_string()
+                    } else {
+                        self.model_path.display().to_string()
+                    }
                 );
                 self.request_model_swap(model_path);
             }

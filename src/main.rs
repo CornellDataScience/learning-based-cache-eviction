@@ -1,11 +1,14 @@
 use std::env;
 use std::process;
+use std::collections::HashSet;
 
+use lbce::analysis::io::load_request_trace_csv;
 use lbce::core::cache::Cache;
 use lbce::core::mainmemory::{MainMemory, MemoryObject};
 use lbce::core::policy::{CacheKey, Policy};
 use lbce::core::replay_engine::ReplayResult;
 use lbce::core::trace::{CacheEvent, RequestTrace};
+use lbce::data::wiki_trace_loader;
 use lbce::policies::{
     fifo::FifoPolicy, learnedpolicy::LearnedPolicy, naivelru::LruPolicy, optimal::OptimalPolicy,
 };
@@ -32,6 +35,8 @@ const DEFAULT_BURSTY_BURST: usize = 16;
 const DEFAULT_BACKGROUND_KEYS: usize = 32;
 const DEFAULT_PHASES: usize = 4;
 const DEFAULT_KEYS_PER_PHASE: usize = 32;
+const DEFAULT_TRACE_PATH: &str = "";
+const DEFAULT_MIXED_MODE: &str = "interleaved";
 
 #[derive(Debug, Clone)]
 struct RunnerConfig {
@@ -50,6 +55,8 @@ struct RunnerConfig {
     background_keys: usize,
     phase_count: usize,
     keys_per_phase: usize,
+    trace_path: String,
+    mixed_mode: String,
     verbose: bool,
     show_events: Option<usize>,
     debug_learned: bool,
@@ -73,6 +80,8 @@ impl Default for RunnerConfig {
             background_keys: DEFAULT_BACKGROUND_KEYS,
             phase_count: DEFAULT_PHASES,
             keys_per_phase: DEFAULT_KEYS_PER_PHASE,
+            trace_path: DEFAULT_TRACE_PATH.to_string(),
+            mixed_mode: DEFAULT_MIXED_MODE.to_string(),
             verbose: false,
             show_events: None,
             debug_learned: false,
@@ -112,6 +121,8 @@ impl RunnerConfig {
                 "--keys-per-phase" => {
                     config.keys_per_phase = next_parse(&mut args, "--keys-per-phase")?
                 }
+                "--trace-path" => config.trace_path = next_string(&mut args, "--trace-path")?,
+                "--mixed-mode" => config.mixed_mode = next_string(&mut args, "--mixed-mode")?,
                 "--verbose" => config.verbose = true,
                 "--show-events" => {
                     config.show_events = Some(next_parse(&mut args, "--show-events")?)
@@ -150,10 +161,26 @@ impl RunnerConfig {
         }
 
         match self.workload.as_str() {
-            "looping" | "zipf" | "bursty" | "phase" => {}
+            "looping" | "zipf" | "bursty" | "phase" | "mixed" | "custom" | "wiki" => {}
             other => {
                 return Err(format!(
-                    "unsupported workload '{other}'. expected one of: looping, zipf, bursty, phase"
+                    "unsupported workload '{other}'. expected one of: looping, zipf, bursty, phase, mixed, custom, wiki"
+                ));
+            }
+        }
+
+        if matches!(self.workload.as_str(), "custom" | "wiki") && self.trace_path.is_empty() {
+            return Err(format!(
+                "--trace-path is required when workload is '{}'",
+                self.workload
+            ));
+        }
+
+        match self.mixed_mode.as_str() {
+            "concat" | "interleaved" => {}
+            other => {
+                return Err(format!(
+                    "unsupported mixed-mode '{other}'. expected one of: concat, interleaved"
                 ));
             }
         }
@@ -177,27 +204,28 @@ where
         .map_err(|err| format!("invalid value for {flag}: {err}"))
 }
 
-fn build_main_memory<const MM_SIZE: usize>(key_space: usize) -> MainMemory<MM_SIZE> {
+fn build_main_memory_from_trace<const MM_SIZE: usize>(trace: &RequestTrace) -> MainMemory<MM_SIZE> {
     let mut mm = MainMemory::new();
-    for key in 0..key_space {
-        mm.insert(MemoryObject::new(key as CacheKey, vec![0]));
+    let mut seen = HashSet::new();
+    for request in trace.requests() {
+        if seen.insert(request.key) {
+            mm.insert(MemoryObject::new(request.key, vec![0]));
+        }
     }
     mm
 }
 
-fn run_with_policy<P: Policy>(config: &RunnerConfig, policy: P) -> ReplayResult {
-    let trace = build_trace(config);
-    let main_memory = build_main_memory::<DEFAULT_MM_SIZE>(trace_key_space(config));
+fn run_with_policy<P: Policy>(config: &RunnerConfig, trace: &RequestTrace, policy: P) -> ReplayResult {
+    let main_memory = build_main_memory_from_trace::<DEFAULT_MM_SIZE>(trace);
     let mut cache = Cache::new(config.cache_capacity, policy, main_memory);
-    replay_with_logging(config, &trace, &mut cache)
+    replay_with_logging(config, trace, &mut cache)
 }
 
-fn run_optimal_policy(config: &RunnerConfig) -> ReplayResult {
-    let trace = build_trace(config);
-    let main_memory = build_main_memory::<DEFAULT_MM_SIZE>(trace_key_space(config));
-    let policy = OptimalPolicy::from_trace(&trace, config.cache_capacity);
+fn run_optimal_policy(config: &RunnerConfig, trace: &RequestTrace) -> ReplayResult {
+    let main_memory = build_main_memory_from_trace::<DEFAULT_MM_SIZE>(trace);
+    let policy = OptimalPolicy::from_trace(trace, config.cache_capacity);
     let mut cache = Cache::new(config.cache_capacity, policy, main_memory);
-    replay_with_logging(config, &trace, &mut cache)
+    replay_with_logging(config, trace, &mut cache)
 }
 
 fn replay_with_logging<P: Policy, const MM_SIZE: usize>(
@@ -263,14 +291,6 @@ fn format_event(event: &CacheEvent) -> String {
     }
 }
 
-fn trace_key_space(config: &RunnerConfig) -> usize {
-    match config.workload.as_str() {
-        "bursty" => config.background_keys + 1,
-        "phase" => config.phase_count * config.keys_per_phase,
-        _ => config.key_space,
-    }
-}
-
 fn build_trace(config: &RunnerConfig) -> lbce::core::trace::RequestTrace {
     match config.workload.as_str() {
         "looping" => {
@@ -305,8 +325,79 @@ fn build_trace(config: &RunnerConfig) -> lbce::core::trace::RequestTrace {
             );
             collect_requests(&mut workload)
         }
+        "mixed" => build_mixed_trace(config),
+        "custom" => load_request_trace_csv(&config.trace_path),
+        "wiki" => wiki_trace_loader::load(std::path::Path::new(&config.trace_path))
+            .unwrap_or_else(|err| panic!("failed to load wiki trace {}: {err}", config.trace_path))
+            .trace,
         other => panic!("unsupported workload after validation: {other}"),
     }
+}
+
+fn build_mixed_trace(config: &RunnerConfig) -> RequestTrace {
+    let looping_keys: Vec<CacheKey> = (0..config.key_space as CacheKey).collect();
+    let zipf_keys: Vec<CacheKey> = (0..config.key_space as CacheKey).collect();
+
+    let mut looping = LoopingWorkload::new(looping_keys, config.total_requests);
+    let mut zipf = ZipfWorkload::new(
+        zipf_keys,
+        config.total_requests,
+        config.zipf_skew,
+        config.zipf_seed,
+    );
+    let mut bursty = BurstyWorkload::new(
+        config.bursty_cycles,
+        config.bursty_quiet,
+        config.bursty_burst,
+        config.background_keys,
+    );
+    let mut phase = PhaseWorkload::new(
+        config.phase_count,
+        config.keys_per_phase,
+        requests_per_phase(config),
+    );
+
+    let traces = vec![
+        collect_requests(&mut looping),
+        collect_requests(&mut zipf),
+        collect_requests(&mut bursty),
+        collect_requests(&mut phase),
+    ];
+
+    match config.mixed_mode.as_str() {
+        "concat" => concat_traces(&traces),
+        "interleaved" => interleave_traces_round_robin(&traces),
+        other => panic!("unsupported mixed-mode after validation: {other}"),
+    }
+}
+
+fn concat_traces(traces: &[RequestTrace]) -> RequestTrace {
+    let mut out = RequestTrace::new();
+    for trace in traces {
+        for req in trace.requests() {
+            out.push(*req);
+        }
+    }
+    out
+}
+
+fn interleave_traces_round_robin(traces: &[RequestTrace]) -> RequestTrace {
+    let mut out = RequestTrace::new();
+    let mut positions = vec![0usize; traces.len()];
+    let mut remaining = true;
+
+    while remaining {
+        remaining = false;
+        for (i, trace) in traces.iter().enumerate() {
+            if positions[i] < trace.len() {
+                out.push(trace.requests()[positions[i]]);
+                positions[i] += 1;
+                remaining = true;
+            }
+        }
+    }
+
+    out
 }
 
 fn requests_per_phase(config: &RunnerConfig) -> usize {
@@ -318,14 +409,18 @@ fn print_usage() {
     println!(
         "\
 Usage:
-  cargo run -- --policy <fifo|lru|learned|optimal> --workload <looping|zipf|bursty|phase> [options]
+  cargo run -- --policy <fifo|lru|learned|optimal> --workload <looping|zipf|bursty|phase|mixed|custom|wiki> [options]
 
 Core options:
   --policy <name>           Policy to run. Default: lru
-  --workload <name>         Workload generator. Default: looping
+  --workload <name>         Workload source. Default: looping
   --cache-capacity <n>      Cache capacity. Default: 64
   --total-requests <n>      Number of requests to generate. Default: 10000
   --key-space <n>           Distinct keys for looping/zipf. Default: 128
+  --trace-path <path>       Input path for custom/wiki workloads
+
+Mixed-workload options:
+  --mixed-mode <name>       concat or interleaved. Default: interleaved
 
 Learned-policy options:
   --model <path>            Model checkpoint path. Default: eviction_mlp.pt
@@ -363,11 +458,13 @@ fn main() {
         }
     };
 
+    let trace = build_trace(&config);
     let result = match config.policy.as_str() {
-        "fifo" => run_with_policy(&config, FifoPolicy::new(config.cache_capacity)),
-        "lru" => run_with_policy(&config, LruPolicy::new(config.cache_capacity)),
+        "fifo" => run_with_policy(&config, &trace, FifoPolicy::new(config.cache_capacity)),
+        "lru" => run_with_policy(&config, &trace, LruPolicy::new(config.cache_capacity)),
         "learned" => run_with_policy(
             &config,
+            &trace,
             LearnedPolicy::with_config_and_debug(
                 &config.model_path,
                 DEFAULT_DECAY_FACTORS.to_vec(),
@@ -375,7 +472,7 @@ fn main() {
                 config.debug_learned,
             ),
         ),
-        "optimal" => run_optimal_policy(&config),
+        "optimal" => run_optimal_policy(&config, &trace),
         other => {
             eprintln!("unsupported policy after validation: {other}");
             process::exit(2);
@@ -384,6 +481,13 @@ fn main() {
 
     println!("policy={}", config.policy);
     println!("workload={}", config.workload);
+    println!("trace_len={}", trace.len());
+    if !config.trace_path.is_empty() {
+        println!("trace_path={}", config.trace_path);
+    }
+    if config.workload == "mixed" {
+        println!("mixed_mode={}", config.mixed_mode);
+    }
     if config.policy == "learned" {
         println!("model={}", config.model_path);
         println!("shortlist_k={}", config.shortlist_k);
