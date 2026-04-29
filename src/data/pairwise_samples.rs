@@ -178,11 +178,7 @@ impl PairwiseDatasetGenerator {
                         );
 
                         let x01 = Self::subtract_features(&phi0, &phi1);
-                        let y01 = match cmp {
-                            Ordering::Greater => 1,
-                            Ordering::Less => 0,
-                            Ordering::Equal => 0,
-                        };
+                        let y01 = pairwise_label_from_ordering(cmp);
 
                         dataset.push(PairwiseSample {
                             trace_name: trace_name.to_string(),
@@ -244,17 +240,16 @@ impl PairwiseDatasetGenerator {
         key1: CacheKey,
         future_positions: &HashMap<CacheKey, VecDeque<usize>>,
     ) -> Ordering {
-        let next0 = future_positions
-            .get(&key0)
-            .and_then(|q| q.front().copied())
-            .unwrap_or(usize::MAX);
-
-        let next1 = future_positions
-            .get(&key1)
-            .and_then(|q| q.front().copied())
-            .unwrap_or(usize::MAX);
-
-        next0.cmp(&next1)
+        compare_next_accesses(
+            future_positions
+                .get(&key0)
+                .and_then(|q| q.front().copied())
+                .map(|idx| idx as u64),
+            future_positions
+                .get(&key1)
+                .and_then(|q| q.front().copied())
+                .map(|idx| idx as u64),
+        )
     }
 
     fn subtract_features(a: &[f32], b: &[f32]) -> Vec<f32> {
@@ -304,5 +299,28 @@ impl PairwiseDatasetGenerator {
         }
 
         v
+    }
+}
+
+/// Compare future accesses for two candidates.
+///
+/// Returns:
+/// - `Ordering::Greater` when `key0` is next used later than `key1` and should
+///   be evicted first
+/// - `Ordering::Less` when `key0` is next used sooner than `key1`
+/// - `Ordering::Equal` when both candidates have the same next-use position
+pub fn compare_next_accesses(next0: Option<u64>, next1: Option<u64>) -> Ordering {
+    next0.unwrap_or(u64::MAX).cmp(&next1.unwrap_or(u64::MAX))
+}
+
+/// Convert next-use ordering into the pairwise label convention shared by the
+/// offline dataset builder and online label maturation.
+///
+/// - `y = 1` means `key0` should be evicted before `key1`
+/// - `y = 0` otherwise
+pub fn pairwise_label_from_ordering(ordering: Ordering) -> u8 {
+    match ordering {
+        Ordering::Greater => 1,
+        Ordering::Less | Ordering::Equal => 0,
     }
 }

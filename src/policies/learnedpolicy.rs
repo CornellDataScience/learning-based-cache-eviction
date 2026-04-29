@@ -1,13 +1,67 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::core::policy::{CacheKey, Policy};
 use crate::deployed::{EvictionMLPNormalized, FEATURE_DIM};
+use crate::policies::label_maturation::{ReplayBuffer, mature_decision};
+
+use crate::data::pairwise_csv_writer::PairwiseCsvWriter;
 
 type MyBackend = burn_ndarray::NdArray<f32>;
 
 const DEFAULT_DECAY_FACTORS: [f32; 3] = [0.5, 0.8, 0.95];
 const DEFAULT_SHORTLIST_K: usize = 4;
+const DEFAULT_MATURITY_WINDOW: u64 = 100;
+const DEFAULT_REPLAY_BUFFER_CAPACITY: usize = 10_000;
+const RETRAIN_EVERY: u64 = 100;
+const MIN_BUFFER_SIZE: usize = 500;
+const RETRAIN_SAMPLE_SIZE: usize = 1000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionSource {
+    Model,
+    Fallback,
+    SingleCandidate,
+}
+
+#[derive(Clone, Debug)]
+pub struct CandidateSnapshot {
+    pub key: CacheKey,
+    pub features: [f32; FEATURE_DIM],
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingDecision {
+    pub decision_id: u64,
+    pub model_version: u64,
+    pub source: DecisionSource,
+    pub decision_tick: u64,
+    pub miss_key: CacheKey,
+    pub resident_candidates: Vec<CandidateSnapshot>,
+    pub shortlist_candidates: Vec<CacheKey>,
+    pub chosen_victim: CacheKey,
+}
+
+impl PendingDecision {
+    pub fn candidate(&self, key: CacheKey) -> Option<&CandidateSnapshot> {
+        self.resident_candidates
+            .iter()
+            .find(|candidate| candidate.key == key)
+    }
+
+    pub fn pair_features(&self, key0: CacheKey, key1: CacheKey) -> Option<[f32; FEATURE_DIM]> {
+        let phi0 = self.candidate(key0)?.features;
+        let phi1 = self.candidate(key1)?.features;
+
+        let mut diff = [0.0; FEATURE_DIM];
+        for idx in 0..FEATURE_DIM {
+            diff[idx] = phi0[idx] - phi1[idx];
+        }
+
+        Some(diff)
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ResidentState {
@@ -86,6 +140,11 @@ impl FeatureState {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PendingModelSwap {
+    path: PathBuf,
+}
+
 pub struct LearnedPolicy {
     model: Option<EvictionMLPNormalized<MyBackend>>,
     model_path: PathBuf,
@@ -96,6 +155,16 @@ pub struct LearnedPolicy {
     residents: HashMap<CacheKey, ResidentState>,
     history: HashMap<CacheKey, FeatureState>,
     decay_factors: Vec<f32>,
+    model_version: u64,
+    next_decision_id: u64,
+    pending_decisions: VecDeque<PendingDecision>,
+    // Step 2: label maturation
+    maturity_window: u64,
+    future_access_ticks: HashMap<CacheKey, VecDeque<u64>>,
+    replay_buffer: ReplayBuffer,
+    pending_swap: Option<PendingModelSwap>,
+    swap_checkpoint_interval: Option<u64>,
+    last_retrain_trigger_decision_id: Option<u64>,
 }
 
 impl LearnedPolicy {
@@ -149,6 +218,15 @@ impl LearnedPolicy {
             residents: HashMap::new(),
             history: HashMap::new(),
             decay_factors,
+            model_version: 0,
+            next_decision_id: 0,
+            pending_decisions: VecDeque::new(),
+            maturity_window: DEFAULT_MATURITY_WINDOW,
+            future_access_ticks: HashMap::new(),
+            replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
+            pending_swap: None,
+            swap_checkpoint_interval: None,
+            last_retrain_trigger_decision_id: None,
         }
     }
 
@@ -167,6 +245,15 @@ impl LearnedPolicy {
             residents: HashMap::new(),
             history: HashMap::new(),
             decay_factors: DEFAULT_DECAY_FACTORS.to_vec(),
+            model_version: 0,
+            next_decision_id: 0,
+            pending_decisions: VecDeque::new(),
+            maturity_window: DEFAULT_MATURITY_WINDOW,
+            future_access_ticks: HashMap::new(),
+            replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_BUFFER_CAPACITY),
+            pending_swap: None,
+            swap_checkpoint_interval: None,
+            last_retrain_trigger_decision_id: None,
         }
     }
 
@@ -180,6 +267,88 @@ impl LearnedPolicy {
 
     pub fn debug_enabled(&self) -> bool {
         self.debug
+    }
+
+    pub fn model_version(&self) -> u64 {
+        self.model_version
+    }
+
+    pub fn pending_decision_count(&self) -> usize {
+        self.pending_decisions.len()
+    }
+
+    pub fn pending_decisions(&self) -> &VecDeque<PendingDecision> {
+        &self.pending_decisions
+    }
+
+    pub fn pop_oldest_pending_decision(&mut self) -> Option<PendingDecision> {
+        self.pending_decisions.pop_front()
+    }
+
+    pub fn maturity_window(&self) -> u64 {
+        self.maturity_window
+    }
+
+    pub fn set_maturity_window(&mut self, window: u64) {
+        self.maturity_window = window;
+    }
+
+    pub fn replay_buffer(&self) -> &ReplayBuffer {
+        &self.replay_buffer
+    }
+
+    pub fn replay_buffer_mut(&mut self) -> &mut ReplayBuffer {
+        &mut self.replay_buffer
+    }
+
+    pub fn request_model_swap(&mut self, path: impl AsRef<Path>) {
+        self.pending_swap = Some(PendingModelSwap {
+            path: path.as_ref().to_path_buf(),
+        });
+    }
+
+    pub fn set_swap_checkpoint_interval(&mut self, interval: Option<u64>) {
+        self.swap_checkpoint_interval = interval.map(|value| value.max(1));
+    }
+
+    pub fn pending_model_swap_path(&self) -> Option<&Path> {
+        self.pending_swap.as_ref().map(|swap| swap.path.as_path())
+    }
+
+    fn should_apply_swap_now(&self) -> bool {
+        match self.swap_checkpoint_interval {
+            Some(interval) => self.tick % interval == 0,
+            None => true,
+        }
+    }
+
+    fn apply_pending_swap_if_ready(&mut self) {
+        if self.pending_swap.is_none() || !self.should_apply_swap_now() {
+            return;
+        }
+
+        let pending = self
+            .pending_swap
+            .take()
+            .expect("pending model swap must exist when applying");
+        let device = Default::default();
+        match EvictionMLPNormalized::<MyBackend>::load(&pending.path, &device) {
+            Ok(model) => {
+                let previous_version = self.model_version;
+                self.model = Some(model);
+                self.model_path = pending.path;
+                self.model_version = self.model_version.saturating_add(1);
+                eprintln!(
+                    "[online-learning] applied model swap version {} -> {} path={}",
+                    previous_version,
+                    self.model_version,
+                    self.model_path.display()
+                );
+            }
+            Err(err) => {
+                eprintln!("[online-learning] model swap failed: {err}");
+            }
+        }
     }
 
     fn record_request(&mut self, key: CacheKey) {
@@ -247,17 +416,191 @@ impl LearnedPolicy {
             .map(|(&key, _)| key)
     }
 
-    fn shortlist_candidates(&self) -> Vec<CacheKey> {
+    fn resident_keys_by_priority(&self) -> Vec<CacheKey> {
         let mut keys: Vec<CacheKey> = self.residents.keys().copied().collect();
         keys.sort_by_key(|key| {
             let state = self
                 .residents
                 .get(key)
-                .expect("resident missing while building learned-policy shortlist");
+                .expect("resident missing while ordering learned-policy candidates");
             (state.last_access_tick, state.insertion_tick, *key)
         });
+        keys
+    }
+
+    fn build_pending_decision(
+        &self,
+        chosen_victim: CacheKey,
+        shortlist_candidates: &[CacheKey],
+        source: DecisionSource,
+        decision_id: u64,
+    ) -> PendingDecision {
+        let miss_key = self
+            .pending_miss
+            .expect("pending miss must exist when recording a learned-policy decision");
+
+        let resident_candidates = self
+            .resident_keys_by_priority()
+            .into_iter()
+            .map(|key| CandidateSnapshot {
+                key,
+                features: self.extract_features(key),
+            })
+            .collect();
+
+        PendingDecision {
+            decision_id,
+            model_version: self.model_version,
+            source,
+            decision_tick: self.tick,
+            miss_key,
+            resident_candidates,
+            shortlist_candidates: shortlist_candidates.to_vec(),
+            chosen_victim,
+        }
+    }
+
+    fn record_pending_decision(
+        &mut self,
+        chosen_victim: CacheKey,
+        shortlist_candidates: &[CacheKey],
+        source: DecisionSource,
+    ) {
+        let decision_id = self.next_decision_id;
+        self.next_decision_id = self.next_decision_id.saturating_add(1);
+
+        let snapshot =
+            self.build_pending_decision(chosen_victim, shortlist_candidates, source, decision_id);
+        self.pending_decisions.push_back(snapshot);
+
+        // Watch shortlist keys so we can record their future accesses for labeling.
+        for &key in shortlist_candidates {
+            self.future_access_ticks.entry(key).or_default();
+        }
+    }
+
+    fn record_future_access(&mut self, key: CacheKey) {
+        if let Some(ticks) = self.future_access_ticks.get_mut(&key) {
+            ticks.push_back(self.tick);
+        }
+    }
+
+    /// Drain and label all pending decisions that have waited at least
+    /// `maturity_window` ticks. Labeled examples are pushed to the replay buffer.
+    pub fn try_mature_pending_decisions(&mut self) {
+        while let Some(front) = self.pending_decisions.front() {
+            if self.tick.saturating_sub(front.decision_tick) < self.maturity_window {
+                break;
+            }
+            let decision = self.pending_decisions.pop_front().unwrap();
+            let examples = mature_decision(&decision, &self.future_access_ticks, true, true);
+            for example in examples {
+                self.replay_buffer.push(example);
+            }
+            self.prune_future_access_ticks();
+        }
+    }
+
+    /// Remove future-access tracking for keys no longer referenced by any pending decision.
+    fn prune_future_access_ticks(&mut self) {
+        let still_needed: HashSet<CacheKey> = self
+            .pending_decisions
+            .iter()
+            .flat_map(|d| d.shortlist_candidates.iter().copied())
+            .collect();
+        self.future_access_ticks
+            .retain(|k, _| still_needed.contains(k));
+    }
+
+    fn shortlist_candidates(&self) -> Vec<CacheKey> {
+        let mut keys = self.resident_keys_by_priority();
         keys.truncate(self.shortlist_k.min(keys.len()));
         keys
+    }
+
+    fn maybe_retrain(&mut self) {
+        if self.replay_buffer.len() < MIN_BUFFER_SIZE {
+            return;
+        }
+
+        if self.next_decision_id == 0 || self.next_decision_id % RETRAIN_EVERY != 0 {
+            return;
+        }
+
+        if self.last_retrain_trigger_decision_id == Some(self.next_decision_id) {
+            return;
+        }
+
+        let data = self.replay_buffer.sample(RETRAIN_SAMPLE_SIZE);
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let online_training_dir = repo_root.join("target").join("online_learning");
+        let model_path = repo_root.join("eviction_mlp.pt");
+        let data_path = online_training_dir.join("online_training.csv");
+        let train_script = repo_root.join("pytorch_model").join("model.py");
+
+        if let Err(err) = fs::create_dir_all(&online_training_dir) {
+            eprintln!(
+                "[online-learning] failed to create online training directory {}: {err}",
+                online_training_dir.display()
+            );
+            return;
+        }
+
+        if let Err(err) =
+            PairwiseCsvWriter::write_to_path(&data_path, &data, self.decay_factors.len())
+        {
+            eprintln!(
+                "[online-learning] failed to write online training csv {}: {err}",
+                data_path.display()
+            );
+            return;
+        }
+
+        self.last_retrain_trigger_decision_id = Some(self.next_decision_id);
+        eprintln!(
+            "[online-learning] retrain triggered decisions={} replay_buffer={} sample_size={} csv={}",
+            self.next_decision_id,
+            self.replay_buffer.len(),
+            data.len(),
+            data_path.display()
+        );
+
+        let output = std::process::Command::new("python3")
+            .current_dir(&repo_root)
+            .arg(&train_script)
+            .arg("--train-csv")
+            .arg(&data_path)
+            .arg("--val-csv")
+            .arg(&data_path)
+            .arg("--epochs")
+            .arg("5")
+            .arg("--output")
+            .arg(&model_path)
+            .arg("--init-checkpoint")
+            .arg(&model_path)
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                eprintln!(
+                    "[online-learning] retrain succeeded status={} output_model={}",
+                    out.status,
+                    model_path.display()
+                );
+                self.request_model_swap(model_path);
+            }
+            Ok(out) => {
+                eprintln!(
+                    "[online-learning] retrain failed status={} stdout=\n{}\nstderr=\n{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            Err(err) => {
+                eprintln!("[online-learning] retraining process failed to start: {err}");
+            }
+        }
     }
 }
 
@@ -270,11 +613,18 @@ impl Policy for LearnedPolicy {
             resident.on_access(self.tick);
         }
         self.record_request(key);
+        self.record_future_access(key);
+        self.try_mature_pending_decisions();
+        self.maybe_retrain();
+        self.apply_pending_swap_if_ready();
     }
 
     fn on_miss(&mut self, key: CacheKey) {
         self.tick = self.tick.saturating_add(1);
         self.pending_miss = Some(key);
+        self.record_future_access(key);
+        self.try_mature_pending_decisions();
+        self.maybe_retrain();
     }
 
     fn insert(&mut self, key: CacheKey) {
@@ -284,6 +634,8 @@ impl Policy for LearnedPolicy {
         if self.pending_miss == Some(key) {
             self.pending_miss = None;
         }
+
+        self.apply_pending_swap_if_ready();
     }
 
     fn remove(&mut self, key: CacheKey) {
@@ -295,62 +647,66 @@ impl Policy for LearnedPolicy {
         if keys.is_empty() {
             return None;
         }
-        if keys.len() == 1 {
-            return keys.first().copied();
-        }
+        let (victim, source) = if keys.len() == 1 {
+            (keys[0], DecisionSource::SingleCandidate)
+        } else if let Some(model) = &self.model {
+            if self.debug {
+                eprintln!("[learned] shortlist={keys:?}");
+            }
 
-        let Some(model) = &self.model else {
-            return self.fallback_victim();
+            let mut scores: HashMap<CacheKey, usize> =
+                keys.iter().copied().map(|key| (key, 0)).collect();
+
+            for i in 0..keys.len() {
+                for j in (i + 1)..keys.len() {
+                    let key0 = keys[i];
+                    let key1 = keys[j];
+                    let features = self.pair_features(key0, key1);
+                    let logit = model.predict_pair(&features);
+
+                    let winner = if logit > 0.0 { key0 } else { key1 };
+                    if self.debug {
+                        eprintln!(
+                            "[learned] pair key0={} key1={} logit={:.5} winner={}",
+                            key0, key1, logit, winner
+                        );
+                    }
+                    *scores
+                        .get_mut(&winner)
+                        .expect("winner must exist in learned policy scores") += 1;
+                }
+            }
+
+            let victim = scores
+                .into_iter()
+                .max_by_key(|(key, score)| {
+                    let state = self
+                        .residents
+                        .get(key)
+                        .expect("resident missing while selecting learned-policy victim");
+                    (
+                        *score,
+                        self.tick.saturating_sub(state.last_access_tick),
+                        self.tick.saturating_sub(state.insertion_tick),
+                    )
+                })
+                .map(|(key, _)| key)
+                .or_else(|| self.fallback_victim())?;
+
+            (victim, DecisionSource::Model)
+        } else {
+            (self.fallback_victim()?, DecisionSource::Fallback)
         };
 
-        if self.debug {
-            eprintln!("[learned] shortlist={keys:?}");
+        if self.pending_miss.is_some() {
+            self.record_pending_decision(victim, &keys, source);
         }
-
-        let mut scores: HashMap<CacheKey, usize> =
-            keys.iter().copied().map(|key| (key, 0)).collect();
-
-        for i in 0..keys.len() {
-            for j in (i + 1)..keys.len() {
-                let key0 = keys[i];
-                let key1 = keys[j];
-                let features = self.pair_features(key0, key1);
-                let logit = model.predict_pair(&features);
-
-                let winner = if logit > 0.0 { key0 } else { key1 };
-                if self.debug {
-                    eprintln!(
-                        "[learned] pair key0={} key1={} logit={:.5} winner={}",
-                        key0, key1, logit, winner
-                    );
-                }
-                *scores
-                    .get_mut(&winner)
-                    .expect("winner must exist in learned policy scores") += 1;
-            }
-        }
-
-        let victim = scores
-            .into_iter()
-            .max_by_key(|(key, score)| {
-                let state = self
-                    .residents
-                    .get(key)
-                    .expect("resident missing while selecting learned-policy victim");
-                (
-                    *score,
-                    self.tick.saturating_sub(state.last_access_tick),
-                    self.tick.saturating_sub(state.insertion_tick),
-                )
-            })
-            .map(|(key, _)| key)
-            .or_else(|| self.fallback_victim());
 
         if self.debug {
-            eprintln!("[learned] victim={victim:?}");
+            eprintln!("[learned] victim={victim:?} source={source:?}");
         }
 
-        victim
+        Some(victim)
     }
 }
 
@@ -398,5 +754,172 @@ mod tests {
 
         assert_eq!(policy.shortlist_candidates(), vec![2, 1]);
         assert_eq!(policy.victim(), Some(2));
+    }
+
+    #[test]
+    fn full_cache_miss_records_pending_decision_snapshot() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        policy.on_miss(3);
+        let victim = policy.victim();
+
+        assert_eq!(victim, Some(2));
+        assert_eq!(policy.pending_decision_count(), 1);
+
+        let snapshot = policy
+            .pending_decisions()
+            .back()
+            .expect("expected pending decision snapshot");
+
+        assert_eq!(snapshot.decision_id, 0);
+        assert_eq!(snapshot.model_version, 0);
+        assert_eq!(snapshot.decision_tick, 4);
+        assert_eq!(snapshot.miss_key, 3);
+        assert_eq!(snapshot.chosen_victim, 2);
+        assert_eq!(snapshot.source, DecisionSource::Fallback);
+        assert_eq!(snapshot.shortlist_candidates, vec![2, 1]);
+
+        let resident_keys: Vec<CacheKey> = snapshot
+            .resident_candidates
+            .iter()
+            .map(|candidate| candidate.key)
+            .collect();
+        assert_eq!(resident_keys, vec![2, 1]);
+    }
+
+    #[test]
+    fn under_capacity_insert_does_not_record_pending_decision() {
+        let mut policy = LearnedPolicy::without_model();
+
+        policy.on_miss(10);
+        policy.insert(10);
+
+        assert_eq!(policy.pending_decision_count(), 0);
+    }
+
+    #[test]
+    fn popping_pending_decision_returns_oldest_snapshot() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+
+        policy.on_miss(3);
+        let _ = policy.victim();
+
+        let snapshot = policy
+            .pop_oldest_pending_decision()
+            .expect("expected pending decision");
+        assert_eq!(snapshot.decision_id, 0);
+        assert_eq!(policy.pending_decision_count(), 0);
+    }
+
+    #[test]
+    fn pending_decision_can_reconstruct_pair_features() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        policy.on_miss(3);
+        let _ = policy.victim();
+
+        let snapshot = policy
+            .pending_decisions()
+            .back()
+            .expect("expected pending decision snapshot");
+
+        let from_snapshot = snapshot
+            .pair_features(2, 1)
+            .expect("expected pairwise features from snapshot");
+        let from_policy = policy.pair_features(2, 1);
+
+        assert_eq!(from_snapshot, from_policy);
+        assert!(snapshot.pair_features(2, 999).is_none());
+    }
+
+    #[test]
+    fn matured_decisions_are_labeled_into_replay_buffer() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+        policy.set_maturity_window(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+        policy.on_hit(1);
+
+        policy.on_miss(3);
+        assert_eq!(policy.victim(), Some(2));
+        assert_eq!(policy.pending_decision_count(), 1);
+        assert!(policy.replay_buffer().is_empty());
+
+        // key 1 is reused before key 2, so key 2 should be evicted first.
+        policy.on_hit(1);
+        policy.on_miss(4);
+
+        assert_eq!(policy.pending_decision_count(), 0);
+        let samples: Vec<_> = policy.replay_buffer().iter().collect();
+        assert_eq!(samples.len(), 2);
+
+        let forward = samples
+            .iter()
+            .find(|sample| sample.key0 == 2 && sample.key1 == 1)
+            .expect("expected forward pairwise sample");
+        assert_eq!(forward.y, 1);
+
+        let swapped = samples
+            .iter()
+            .find(|sample| sample.key0 == 1 && sample.key1 == 2)
+            .expect("expected swapped pairwise sample");
+        assert_eq!(swapped.y, 0);
+    }
+
+    #[test]
+    fn model_swap_is_not_applied_during_victim_decision() {
+        let mut policy = LearnedPolicy::without_model_with_shortlist_k(2);
+
+        policy.on_miss(1);
+        policy.insert(1);
+        policy.on_miss(2);
+        policy.insert(2);
+
+        policy.set_swap_checkpoint_interval(Some(100));
+        policy.request_model_swap("eviction_mlp.pt");
+
+        assert!(policy.pending_model_swap_path().is_some());
+        let _ = policy.victim();
+        assert!(policy.pending_model_swap_path().is_some());
+    }
+
+    #[test]
+    fn model_swap_applies_only_on_checkpoint_boundaries() {
+        let mut policy = LearnedPolicy::without_model();
+
+        policy.on_miss(1);
+        policy.insert(1);
+
+        policy.set_swap_checkpoint_interval(Some(4));
+        policy.request_model_swap("definitely_missing_model_checkpoint.pt");
+
+        policy.on_hit(1);
+        assert!(policy.pending_model_swap_path().is_some());
+
+        policy.on_hit(1);
+        assert!(policy.pending_model_swap_path().is_some());
+
+        policy.on_hit(1);
+        assert!(policy.pending_model_swap_path().is_none());
     }
 }
