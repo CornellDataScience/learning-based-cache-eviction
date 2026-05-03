@@ -560,8 +560,9 @@ impl LearnedPolicy {
             data.len(),
             data_path.display()
         );
-
-        let output = std::process::Command::new("python3")
+        
+        let python_cmd = std::env::var("LBCE_PYTHON").unwrap_or_else(|_| "python3".to_string());
+        let output = std::process::Command::new(&python_cmd)
             .current_dir(&repo_root)
             .arg(&train_script)
             .arg("--train-csv")
