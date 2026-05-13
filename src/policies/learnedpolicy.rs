@@ -162,7 +162,7 @@ pub struct LearnedPolicy {
 
 impl LearnedPolicy {
     pub fn new() -> Self {
-        Self::from_path("eviction_mlp.pt")
+        Self::from_path("artifacts/models/eviction_mlp.pt")
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Self {
@@ -230,7 +230,7 @@ impl LearnedPolicy {
     pub fn without_model_with_shortlist_k(shortlist_k: usize) -> Self {
         Self {
             model: None,
-            model_path: PathBuf::from("eviction_mlp.pt"),
+            model_path: PathBuf::from("artifacts/models/eviction_mlp.pt"),
             shortlist_k: shortlist_k.max(1),
             debug: false,
             tick: 0,
@@ -522,7 +522,7 @@ impl LearnedPolicy {
         let data = self.replay_buffer.sample(RETRAIN_SAMPLE_SIZE);
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let online_training_dir = repo_root.join("target").join("online_learning");
-        let offline_model_path = repo_root.join("eviction_mlp.pt");
+        let offline_model_path = repo_root.join("artifacts").join("models").join("eviction_mlp.pt");
         let model_path = online_training_dir.join("eviction_mlp_online.pt");
         let data_path = online_training_dir.join("online_training.csv");
         let train_script = repo_root.join("pytorch_model").join("model.py");
@@ -890,7 +890,7 @@ mod tests {
         policy.insert(2);
 
         policy.set_swap_checkpoint_interval(Some(100));
-        policy.request_model_swap("eviction_mlp.pt");
+        policy.request_model_swap("artifacts/models/eviction_mlp.pt");
 
         assert!(policy.pending_model_swap_path().is_some());
         let _ = policy.victim();

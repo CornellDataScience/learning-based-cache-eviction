@@ -10,7 +10,7 @@ use lbce::core::replay_engine::ReplayResult;
 use lbce::core::trace::{CacheEvent, RequestTrace};
 use lbce::data::wiki_trace_loader;
 use lbce::policies::{
-    fifo::FifoPolicy, learnedpolicy::LearnedPolicy, naivelru::LruPolicy, optimal::OptimalPolicy,
+    fifo::FifoPolicy, learnedpolicy::LearnedPolicy, lru::LruPolicy, optimal::OptimalPolicy,
 };
 use lbce::workloads::bursty::BurstyWorkload;
 use lbce::workloads::looping::LoopingWorkload;
@@ -25,7 +25,7 @@ const DEFAULT_WORKLOAD: &str = "looping";
 const DEFAULT_CACHE_CAPACITY: usize = 64;
 const DEFAULT_TOTAL_REQUESTS: usize = 10_000;
 const DEFAULT_KEY_SPACE: usize = 128;
-const DEFAULT_MODEL_PATH: &str = "eviction_mlp.pt";
+const DEFAULT_MODEL_PATH: &str = "artifacts/models/eviction_mlp.pt";
 const DEFAULT_SHORTLIST_K: usize = 4;
 const DEFAULT_ZIPF_SKEW: f64 = 1.2;
 const DEFAULT_ZIPF_SEED: u64 = 7;
@@ -423,7 +423,7 @@ Mixed-workload options:
   --mixed-mode <name>       concat or interleaved. Default: interleaved
 
 Learned-policy options:
-  --model <path>            Model checkpoint path. Default: eviction_mlp.pt
+  --model <path>            Model checkpoint path. Default: artifacts/models/eviction_mlp.pt
   --shortlist-k <n>         LRU shortlist size before pairwise voting. Default: 4
   --debug-learned           Print shortlist and pairwise vote details
 

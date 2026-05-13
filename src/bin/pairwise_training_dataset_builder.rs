@@ -474,7 +474,7 @@ fn main() {
     match TrainingDatasetBuilder::build_and_write_pairwise_training_csv::<MM_SIZE, _>(
         &config,
         &real_traces,
-        "pairwise_training_dataset.csv",
+        "artifacts/datasets/pairwise_training_dataset.csv",
     ) {
         Ok(()) => println!("\n🎉 Done! Dataset ready."),
         Err(e) => {

@@ -5,7 +5,7 @@ use lbce::data::pairwise_samples::{
     PairwiseDatasetConfig,
     PairwiseDatasetGenerator,
 };
-use lbce::policies::naivelru::LruPolicy;
+use lbce::policies::lru::LruPolicy;
 
 const MM_SIZE: usize = 64;
 

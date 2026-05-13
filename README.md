@@ -1,21 +1,39 @@
-# learning-based-cache-eviction
+# Adaptive Cache
 
-Ella Schneyer (ems474)
+A learning-based cache eviction simulator, dataset pipeline, and model training stack.
 
-Joy Wang (xw757)
+## Repo layout
 
-Amit Salpeter (aas397)
+- `src/`: Rust simulator, policies, workloads, and dataset builders
+- `pytorch_model/`: Python training, sweep, and evaluation scripts
+- `analysis_outputs/`: demo CLI and presentation/demo helpers
+- `artifacts/models/`: offline checkpoints and normalization metadata
+- `artifacts/datasets/`: generated train/validation/test CSVs
+- `artifacts/traces/`: sampled real-world traces used by the simulator and builders
+- `scripts/`: one-off data preparation helpers
 
-Audrey Zhang (hz756)
+## Common commands
 
-Benjamin Li
+Generate training data:
 
-Mukund Gaur (mg2476)
+```bash
+cargo run --bin pairwise_training_dataset_builder -- artifacts/traces/wiki_sampled_train_trace.tsv
+```
 
-Shawn Zou (sz684)
+Generate validation and test data:
 
-Smriti Kumar (sk3452)
+```bash
+cargo run --bin pairwise_evaluation_datasets_builder -- val:artifacts/traces/wiki_sampled_val_trace.tsv test:artifacts/traces/wiki_sampled_test_trace.tsv
+```
 
-Sophia Lu (sxl9)
+Train the offline model:
 
-Wonjin Eum (we46)
+```bash
+python3 pytorch_model/model.py
+```
+
+Run the simulator demo CLI:
+
+```bash
+python3 analysis_outputs/demo_cli.py race --workload mixed --mixed-mode interleaved --cache-capacity 64 --include-learned
+```

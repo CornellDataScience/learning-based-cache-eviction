@@ -9,7 +9,7 @@ use lbce::core::mainmemory::{MainMemory, MemoryObject};
 use lbce::core::replay_engine::replay_trace;
 use lbce::core::trace::{CacheEvent, Request, RequestTrace};
 use lbce::policies::fifo::FifoPolicy;
-use lbce::policies::naivelru::LruPolicy;
+use lbce::policies::lru::LruPolicy;
 use lbce::workloads::bursty::BurstyWorkload;
 use lbce::workloads::looping::LoopingWorkload;
 use lbce::workloads::phase::PhaseWorkload;

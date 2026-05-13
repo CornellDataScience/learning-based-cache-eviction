@@ -12,6 +12,7 @@ from common import (
     EvictionMLP,
     default_checkpoint_path,
     default_metadata_path,
+    datasets_dir,
 )
 
 
@@ -98,7 +99,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--data",
-        default="pairwise_test_datasets",
+        default=str(datasets_dir() / "pairwise_test_datasets"),
         help="CSV file or directory of CSV files to evaluate",
     )
     parser.add_argument("--batch-size", type=int, default=512)

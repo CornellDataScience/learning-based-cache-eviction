@@ -1,7 +1,7 @@
 use lbce::core::cache::Cache;
 use lbce::core::mainmemory::{MainMemory, MemoryObject};
 use lbce::policies::fifo::FifoPolicy;
-use lbce::policies::naivelru::LruPolicy;
+use lbce::policies::lru::LruPolicy;
 
 fn populated_main_memory<const N: usize>(keys: &[u64]) -> MainMemory<N> {
     let mut mm = MainMemory::new();

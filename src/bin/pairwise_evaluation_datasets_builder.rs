@@ -714,7 +714,7 @@ fn main() {
     if let Err(e) = EvalDatasetBuilder::write_validation_csv::<MM_SIZE, _>(
         &config,
         &validation_real_traces,
-        "pairwise_validation_dataset.csv",
+        "artifacts/datasets/pairwise_validation_dataset.csv",
     ) {
         eprintln!("Failed to write validation CSV: {}", e);
         std::process::exit(1);
@@ -723,7 +723,7 @@ fn main() {
     if let Err(e) = EvalDatasetBuilder::write_test_csvs::<MM_SIZE, _>(
         &config,
         &test_real_traces,
-        "pairwise_test_datasets",
+        "artifacts/datasets/pairwise_test_datasets",
     ) {
         eprintln!("Failed to write test CSVs: {}", e);
         std::process::exit(1);

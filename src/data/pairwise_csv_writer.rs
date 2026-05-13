@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -12,6 +12,13 @@ impl PairwiseCsvWriter {
         samples: &[PairwiseSample],
         _decay_dims: usize,
     ) -> std::io::Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
 

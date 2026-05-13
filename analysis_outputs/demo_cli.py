@@ -2,10 +2,10 @@
 """Demo console for the cache-eviction simulator.
 
 Examples:
-  python3 analysis_outputs/demo_cli.py trace --format wiki --trace-path wiki_sampled_test_trace.tsv
+  python3 analysis_outputs/demo_cli.py trace --format wiki --trace-path artifacts/traces/wiki_sampled_test_trace.tsv
   python3 analysis_outputs/demo_cli.py race --workload looping --cache-capacity 64 --key-space 128
-  python3 analysis_outputs/demo_cli.py race --workload wiki --trace-path wiki_sampled_test_trace.tsv --cache-capacity 256
-  python3 analysis_outputs/demo_cli.py sweep --workload wiki --trace-path wiki_sampled_test_trace.tsv --capacities 32,64,128,256 --plot
+  python3 analysis_outputs/demo_cli.py race --workload wiki --trace-path artifacts/traces/wiki_sampled_test_trace.tsv --cache-capacity 256
+  python3 analysis_outputs/demo_cli.py sweep --workload wiki --trace-path artifacts/traces/wiki_sampled_test_trace.tsv --capacities 32,64,128,256 --plot
 """
 
 from __future__ import annotations
@@ -277,7 +277,7 @@ def add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--keys-per-phase", type=int, default=32)
     parser.add_argument("--mixed-mode", default="interleaved", choices=["concat", "interleaved"])
     parser.add_argument("--include-learned", action="store_true", help="include learned policy; slower because it may retrain online")
-    parser.add_argument("--model", default="eviction_mlp.pt")
+    parser.add_argument("--model", default="artifacts/models/eviction_mlp.pt")
     parser.add_argument("--shortlist-k", type=int, default=4)
     parser.add_argument("--debug-learned", action="store_true")
 

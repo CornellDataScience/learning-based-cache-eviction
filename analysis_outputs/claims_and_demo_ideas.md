@@ -5,7 +5,7 @@ Run commands from the repo root.
 ## 1. Trace summary
 
 ```bash
-python3 analysis_outputs/demo_cli.py trace --format wiki --trace-path wiki_sampled_test_trace.tsv
+python3 analysis_outputs/demo_cli.py trace --format wiki --trace-path artifacts/traces/wiki_sampled_test_trace.tsv
 ```
 
 Shows request count, number of unique keys, repeat rate, and top keys.
@@ -21,7 +21,7 @@ Compares FIFO, LRU, learned, and optimal.
 ## 3. Policy race on the Wiki trace
 
 ```bash
-python3 analysis_outputs/demo_cli.py race --workload wiki --trace-path wiki_sampled_test_trace.tsv --cache-capacity 256 --include-learned
+python3 analysis_outputs/demo_cli.py race --workload wiki --trace-path artifacts/traces/wiki_sampled_test_trace.tsv --cache-capacity 256 --include-learned
 ```
 
 This can take a while because the learned policy may retrain online.
@@ -29,7 +29,7 @@ This can take a while because the learned policy may retrain online.
 ## 4. Capacity sweep with a plot
 
 ```bash
-python3 analysis_outputs/demo_cli.py sweep --workload wiki --trace-path wiki_sampled_test_trace.tsv --capacities 64,128,256,512,1024 --plot
+python3 analysis_outputs/demo_cli.py sweep --workload wiki --trace-path artifacts/traces/wiki_sampled_test_trace.tsv --capacities 64,128,256,512,1024 --plot
 ```
 
 Writes:

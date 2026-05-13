@@ -26,20 +26,32 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def artifacts_dir() -> Path:
+    return repo_root() / "artifacts"
+
+
+def datasets_dir() -> Path:
+    return artifacts_dir() / "datasets"
+
+
+def models_dir() -> Path:
+    return artifacts_dir() / "models"
+
+
 def default_train_csv() -> Path:
-    return repo_root() / "pairwise_training_dataset.csv"
+    return datasets_dir() / "pairwise_training_dataset.csv"
 
 
 def default_val_csv() -> Path:
-    return repo_root() / "pairwise_validation_dataset.csv"
+    return datasets_dir() / "pairwise_validation_dataset.csv"
 
 
 def default_checkpoint_path() -> Path:
-    return repo_root() / "eviction_mlp.pt"
+    return models_dir() / "eviction_mlp.pt"
 
 
 def default_metadata_path() -> Path:
-    return repo_root() / "eviction_mlp.meta.json"
+    return models_dir() / "eviction_mlp.meta.json"
 
 
 def fit_zscore(x: np.ndarray):
