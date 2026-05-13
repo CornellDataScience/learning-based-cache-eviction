@@ -83,13 +83,6 @@ impl ResidentState {
         self.last_access_tick = now_tick;
         self.access_count = self.access_count.saturating_add(1);
     }
-
-    fn frequency(&self, now_tick: u64) -> f32 {
-        let age = now_tick
-            .saturating_sub(self.insertion_tick)
-            .saturating_add(1) as f32;
-        self.access_count as f32 / age
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -2,7 +2,6 @@ use crate::core::policy::CacheKey;
 use crate::workloads::workload::Workload;
 
 pub struct BurstyWorkload {
-    num_cycles: usize,
     quiet_length: usize,
     burst_length: usize,
     background_keys: usize,
@@ -29,7 +28,6 @@ impl BurstyWorkload {
         let total_requests = num_cycles * (quiet_length + burst_length);
         let burst_key = background_keys as CacheKey;
         Self {
-            num_cycles,
             quiet_length,
             burst_length,
             background_keys,

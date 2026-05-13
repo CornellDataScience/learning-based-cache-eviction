@@ -2,7 +2,6 @@ use crate::core::policy::CacheKey;
 use crate::workloads::workload::Workload;
 
 pub struct PhaseWorkload {
-    num_phases: usize,
     keys_per_phase: usize,
     requests_per_phase: usize,
     current_phase: usize,
@@ -26,7 +25,6 @@ impl PhaseWorkload {
         let total_requests = num_phases * requests_per_phase;
 
         Self {
-            num_phases,
             keys_per_phase,
             requests_per_phase,
             current_phase: 0,

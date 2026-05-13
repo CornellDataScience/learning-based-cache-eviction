@@ -85,12 +85,13 @@ def run_policy(policy: str, args: argparse.Namespace) -> dict[str, object]:
         command += ["--model", args.model, "--shortlist-k", str(args.shortlist_k)]
         if args.debug_learned:
             command.append("--debug-learned")
+    live_logs = policy == "learned" and args.show_learned_logs
     completed = subprocess.run(
         command,
         cwd=ROOT,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None if live_logs else subprocess.PIPE,
         check=True,
     )
     return {
