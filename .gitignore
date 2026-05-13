@@ -7,3 +7,4 @@ pytorch_model/__pycache__/
 venv/
 __pycache__/
 *.pyc
+artifacts/traces/wiki_trace.tsv
